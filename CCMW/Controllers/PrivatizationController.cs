@@ -19,7 +19,7 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // GET ALL CONTRACTORS
+        // GET ALL CONTRACTORS - FIXED VERSION
         // =====================================================
         [HttpGet]
         [Route("")]
@@ -34,7 +34,8 @@ namespace CCMW.Controllers
                     query = query.Where(c => c.IsActive == isActive.Value);
                 }
 
-                var contractors = query
+                // Get the data first, then calculate in memory
+                var contractorsData = query
                     .Select(c => new
                     {
                         c.ContractorId,
@@ -51,22 +52,46 @@ namespace CCMW.Controllers
                         c.PerformanceScore,
                         c.SLAComplianceRate,
                         c.IsActive,
-                        AssignedZones = db.ContractorZoneAssignments.Count(z => z.ContractorId == c.ContractorId && z.IsActive),
-                        ContractStatus = c.ContractEnd < DateTime.Now ? "Expired" : "Active",
-                        DaysRemaining = c.ContractEnd > DateTime.Now ? (c.ContractEnd - DateTime.Now).Days : 0
+                        c.CreatedAt,
+                        c.UpdatedAt
                     })
                     .OrderBy(c => c.CompanyName)
                     .ToList();
 
+                // Calculate in memory - DateTime is non-nullable, so no HasValue needed
+                var result = contractorsData.Select(c => new
+                {
+                    c.ContractorId,
+                    c.CompanyName,
+                    c.CompanyRegistrationNumber,
+                    c.ContactPersonName,
+                    c.ContactPersonPhone,
+                    c.ContactEmail,
+                    c.CompanyAddress,
+                    c.ContractStart,
+                    c.ContractEnd,
+                    c.ContractValue,
+                    c.PerformanceBond,
+                    c.PerformanceScore,
+                    c.SLAComplianceRate,
+                    c.IsActive,
+                    c.CreatedAt,
+                    c.UpdatedAt,
+                    AssignedZones = db.ContractorZoneAssignments.Count(z => z.ContractorId == c.ContractorId && z.IsActive),
+                    ContractStatus = (c.ContractEnd < DateTime.Now) ? "Expired" : "Active",
+                    DaysRemaining = (c.ContractEnd > DateTime.Now) ? (c.ContractEnd - DateTime.Now).Days : 0
+                }).ToList();
+
                 return Ok(new
                 {
-                    TotalContractors = contractors.Count,
-                    ActiveContractors = contractors.Count(c => c.IsActive),
-                    Contractors = contractors
+                    TotalContractors = result.Count,
+                    ActiveContractors = result.Count(c => c.IsActive),
+                    Contractors = result
                 });
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"❌ Error in GetAllContractors: {ex.Message}");
                 return InternalServerError(ex);
             }
         }
@@ -144,6 +169,7 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"❌ Error in GetContractorById: {ex.Message}");
                 return InternalServerError(ex);
             }
         }
@@ -196,6 +222,7 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"❌ Error in GetContractorZones: {ex.Message}");
                 return InternalServerError(ex);
             }
         }
@@ -237,6 +264,7 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"❌ Error in CreateContractor: {ex.Message}");
                 return InternalServerError(ex);
             }
         }
@@ -273,6 +301,8 @@ namespace CCMW.Controllers
                 contractor.ContractEnd = updated.ContractEnd;
                 contractor.ContractValue = updated.ContractValue;
                 contractor.PerformanceBond = updated.PerformanceBond;
+                contractor.PerformanceScore = updated.PerformanceScore;
+                contractor.SLAComplianceRate = updated.SLAComplianceRate;
 
                 contractor.UpdatedAt = DateTime.Now;
 
@@ -286,6 +316,39 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"❌ Error in UpdateContractor: {ex.Message}");
+                return InternalServerError(ex);
+            }
+        }
+
+        // =====================================================
+        // DELETE/DEACTIVATE CONTRACTOR
+        // =====================================================
+        [HttpDelete]
+        [Route("{contractorId:guid}")]
+        public IHttpActionResult DeleteContractor(Guid contractorId)
+        {
+            try
+            {
+                var contractor = db.Contractors.Find(contractorId);
+                if (contractor == null)
+                    return NotFound("Contractor not found");
+
+                // Soft delete - set IsActive to false
+                contractor.IsActive = false;
+                contractor.UpdatedAt = DateTime.Now;
+
+                db.SaveChanges();
+
+                return Ok(new
+                {
+                    Message = "Contractor deactivated successfully",
+                    ContractorId = contractorId
+                });
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"❌ Error in DeleteContractor: {ex.Message}");
                 return InternalServerError(ex);
             }
         }
@@ -346,6 +409,7 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"❌ Error in AssignToZone: {ex.Message}");
                 return InternalServerError(ex);
             }
         }
@@ -388,6 +452,7 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"❌ Error in TerminateAssignment: {ex.Message}");
                 return InternalServerError(ex);
             }
         }
@@ -446,6 +511,7 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"❌ Error in AddPerformanceRecord: {ex.Message}");
                 return InternalServerError(ex);
             }
         }
@@ -453,23 +519,18 @@ namespace CCMW.Controllers
         // =====================================================
         // GET CONTRACTOR PERFORMANCE DASHBOARD
         // =====================================================
-        // =====================================================
-        // GET CONTRACTOR PERFORMANCE DASHBOARD - FIXED VERSION
-        // =====================================================
         [HttpGet]
         [Route("{contractorId:guid}/dashboard")]
         public IHttpActionResult GetContractorDashboard(Guid contractorId)
         {
             try
             {
-                // First check if contractor exists
                 var contractor = db.Contractors
                     .FirstOrDefault(c => c.ContractorId == contractorId);
 
                 if (contractor == null)
                     return NotFound("Contractor not found");
 
-                // Get assigned zones - FIXED: Handle null Zone reference
                 var assignments = db.ContractorZoneAssignments
                     .Where(z => z.ContractorId == contractorId && z.IsActive)
                     .ToList();
@@ -480,7 +541,6 @@ namespace CCMW.Controllers
 
                 foreach (var assignment in assignments)
                 {
-                    // Get zone info safely
                     var zone = db.Zones.FirstOrDefault(z => z.ZoneId == assignment.ZoneId);
                     string zoneName = zone?.ZoneName ?? "Unknown Zone";
 
@@ -494,7 +554,6 @@ namespace CCMW.Controllers
                     totalActiveComplaints += activeComplaints;
                     totalResolvedComplaints += resolvedComplaints;
 
-                    // Add to zones list
                     zonesList.Add(new
                     {
                         assignment.ZoneId,
@@ -514,14 +573,12 @@ namespace CCMW.Controllers
                     resolutionRate = (double)totalResolvedComplaints / totalComplaints * 100;
                 }
 
-                // FIXED: DateTime is not nullable, so remove HasValue checks
                 int daysRemaining = 0;
                 if (contractor.ContractEnd > DateTime.Now)
                 {
                     daysRemaining = (contractor.ContractEnd - DateTime.Now).Days;
                 }
 
-                // Get recent performance safely
                 var recentPerformance = new List<object>();
                 try
                 {
@@ -551,7 +608,6 @@ namespace CCMW.Controllers
                     {
                         contractor.ContractorId,
                         contractor.CompanyName,
-                        // FIXED: Use direct values, not nullable operators
                         PerformanceScore = contractor.PerformanceScore,
                         SLAComplianceRate = contractor.SLAComplianceRate,
                         ContractStart = contractor.ContractStart,
@@ -571,25 +627,21 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
-                // Log the actual error for debugging
                 System.Diagnostics.Debug.WriteLine($"Dashboard error: {ex.Message}");
-                System.Diagnostics.Debug.WriteLine($"Stack trace: {ex.StackTrace}");
-
-                if (ex.InnerException != null)
-                {
-                    System.Diagnostics.Debug.WriteLine($"Inner exception: {ex.InnerException.Message}");
-                }
-
                 return InternalServerError(ex);
             }
         }
+
         protected override void Dispose(bool disposing)
         {
             if (disposing)
                 db.Dispose();
             base.Dispose(disposing);
         }
-        // Add these DTO classes at the bottom of ContractorController.cs or in a separate DTO file
+
+        // =====================================================
+        // DTO CLASSES
+        // =====================================================
 
         public class ZoneAssignmentRequest
         {
