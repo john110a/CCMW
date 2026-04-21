@@ -19,7 +19,7 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // GET ALL CONTRACTORS - FIXED VERSION
+        // GET ALL CONTRACTORS
         // =====================================================
         [HttpGet]
         [Route("")]
@@ -34,7 +34,6 @@ namespace CCMW.Controllers
                     query = query.Where(c => c.IsActive == isActive.Value);
                 }
 
-                // Get the data first, then calculate in memory
                 var contractorsData = query
                     .Select(c => new
                     {
@@ -58,7 +57,6 @@ namespace CCMW.Controllers
                     .OrderBy(c => c.CompanyName)
                     .ToList();
 
-                // Calculate in memory - DateTime is non-nullable, so no HasValue needed
                 var result = contractorsData.Select(c => new
                 {
                     c.ContractorId,
@@ -228,30 +226,74 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // CREATE CONTRACTOR
+        // CREATE CONTRACTOR WITH USER ACCOUNT (NO HASHING)
         // =====================================================
         [HttpPost]
         [Route("create")]
-        public IHttpActionResult CreateContractor([FromBody] Contractor contractor)
+        public IHttpActionResult CreateContractor([FromBody] CreateContractorRequest request)
         {
             try
             {
-                if (contractor == null)
+                if (request == null)
                     return BadRequest("Contractor data is required.");
 
-                if (string.IsNullOrEmpty(contractor.CompanyName))
+                if (string.IsNullOrEmpty(request.CompanyName))
                     return BadRequest("Company name is required.");
 
-                if (!string.IsNullOrEmpty(contractor.CompanyRegistrationNumber) &&
-                    db.Contractors.Any(c => c.CompanyRegistrationNumber == contractor.CompanyRegistrationNumber))
+                if (string.IsNullOrEmpty(request.Email))
+                    return BadRequest("Email is required.");
+
+                if (string.IsNullOrEmpty(request.Password))
+                    return BadRequest("Password is required.");
+
+                // Check if user already exists
+                var existingUser = db.Users.FirstOrDefault(u => u.Email == request.Email);
+                if (existingUser != null)
+                    return BadRequest("A user with this email already exists.");
+
+                if (!string.IsNullOrEmpty(request.CompanyRegistrationNumber) &&
+                    db.Contractors.Any(c => c.CompanyRegistrationNumber == request.CompanyRegistrationNumber))
                 {
                     return BadRequest("Company registration number already exists.");
                 }
 
-                contractor.ContractorId = Guid.NewGuid();
-                contractor.CreatedAt = DateTime.Now;
-                contractor.UpdatedAt = DateTime.Now;
-                contractor.IsActive = true;
+                // Create User account (plain text password - NOT RECOMMENDED FOR PRODUCTION)
+                var user = new User
+                {
+                    UserId = Guid.NewGuid(),
+                    Email = request.Email,
+                    FullName = request.CompanyName,
+                    PhoneNumber = request.ContactPersonPhone,
+                    UserType = "Contractor",
+                    PasswordHash = request.Password, // Plain text password
+                    IsActive = true,
+                    IsVerified = true,
+                    CreatedAt = DateTime.Now,
+                    LastLogin = null
+                };
+
+                db.Users.Add(user);
+
+                // Create Contractor record
+                var contractor = new Contractor
+                {
+                    ContractorId = user.UserId,
+                    CompanyName = request.CompanyName,
+                    CompanyRegistrationNumber = request.CompanyRegistrationNumber,
+                    ContactPersonName = request.ContactPersonName,
+                    ContactPersonPhone = request.ContactPersonPhone,
+                    ContactEmail = request.Email,
+                    CompanyAddress = request.CompanyAddress,
+                    ContractStart = request.ContractStart,
+                    ContractEnd = request.ContractEnd,
+                    ContractValue = request.ContractValue,
+                    PerformanceBond = request.PerformanceBond,
+                    PerformanceScore = request.PerformanceScore ?? 0,
+                    SLAComplianceRate = request.SLAComplianceRate ?? 0,
+                    IsActive = true,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now
+                };
 
                 db.Contractors.Add(contractor);
                 db.SaveChanges();
@@ -259,7 +301,9 @@ namespace CCMW.Controllers
                 return Ok(new
                 {
                     Message = "Contractor created successfully",
-                    ContractorId = contractor.ContractorId
+                    ContractorId = contractor.ContractorId,
+                    UserId = user.UserId,
+                    Email = user.Email
                 });
             }
             catch (Exception ex)
@@ -338,6 +382,13 @@ namespace CCMW.Controllers
                 contractor.IsActive = false;
                 contractor.UpdatedAt = DateTime.Now;
 
+                // Also deactivate the associated user
+                var user = db.Users.Find(contractorId);
+                if (user != null)
+                {
+                    user.IsActive = false;
+                }
+
                 db.SaveChanges();
 
                 return Ok(new
@@ -364,6 +415,15 @@ namespace CCMW.Controllers
             {
                 if (request == null)
                     return BadRequest("Assignment data is required.");
+
+                if (request.ContractorId == Guid.Empty)
+                    return BadRequest("Contractor ID is required.");
+
+                if (request.ZoneId == Guid.Empty)
+                    return BadRequest("Zone ID is required.");
+
+                if (string.IsNullOrEmpty(request.ServiceType))
+                    return BadRequest("Service type is required.");
 
                 var contractor = db.Contractors.Find(request.ContractorId);
                 if (contractor == null)
@@ -642,6 +702,23 @@ namespace CCMW.Controllers
         // =====================================================
         // DTO CLASSES
         // =====================================================
+
+        public class CreateContractorRequest
+        {
+            public string CompanyName { get; set; }
+            public string CompanyRegistrationNumber { get; set; }
+            public string ContactPersonName { get; set; }
+            public string ContactPersonPhone { get; set; }
+            public string Email { get; set; }
+            public string Password { get; set; }
+            public string CompanyAddress { get; set; }
+            public DateTime ContractStart { get; set; }
+            public DateTime ContractEnd { get; set; }
+            public decimal ContractValue { get; set; }
+            public decimal PerformanceBond { get; set; }
+            public decimal? PerformanceScore { get; set; }
+            public decimal? SLAComplianceRate { get; set; }
+        }
 
         public class ZoneAssignmentRequest
         {
