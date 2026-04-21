@@ -19,7 +19,7 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // ASSIGN COMPLAINT - FIXED VERSION
+        // ASSIGN COMPLAINT - FIXED FOR YOUR ACTUAL MODELS
         // =====================================================
         [HttpPost]
         [Route("assign")]
@@ -38,39 +38,24 @@ namespace CCMW.Controllers
                     return BadRequest("Staff ID is required.");
 
                 // Get complaint
-                var complaint = db.Complaints
-                    .Include(c => c.Assignments)
-                    .FirstOrDefault(c => c.ComplaintId == request.ComplaintId);
-
+                var complaint = db.Complaints.FirstOrDefault(c => c.ComplaintId == request.ComplaintId);
                 if (complaint == null)
                     return NotFound("Complaint not found.");
 
-                // Get staff
+                // Get staff with User navigation property
                 var staff = db.StaffProfiles
                     .Include(s => s.User)
                     .FirstOrDefault(s => s.StaffId == request.AssignedToId);
-
                 if (staff == null)
                     return NotFound("Staff not found.");
 
-                // Check if staff is available
-                if (!staff.IsAvailable)
-                    return BadRequest("Staff is not available for assignment.");
-
                 // Check if complaint is already assigned
-                if (complaint.AssignedToId != null)
+                if (complaint.AssignedToId != null && complaint.AssignedToId != Guid.Empty)
                     return BadRequest("Complaint is already assigned to another staff member.");
 
-                // Check if complaint is approved (can only assign approved complaints)
+                // Check if complaint is approved (ComplaintStatus enum)
                 if (complaint.CurrentStatus != ComplaintStatus.Approved)
                     return BadRequest($"Complaint status must be 'Approved' to assign. Current status: {complaint.CurrentStatus}");
-
-                // Update complaint
-                var oldStatus = complaint.CurrentStatus;
-                complaint.AssignedToId = staff.StaffId;
-                complaint.AssignedAt = DateTime.Now;
-                complaint.CurrentStatus = ComplaintStatus.Assigned;
-                complaint.StatusUpdatedAt = DateTime.Now;
 
                 // Create assignment record
                 var assignment = new ComplaintAssignment
@@ -78,7 +63,7 @@ namespace CCMW.Controllers
                     AssignmentId = Guid.NewGuid(),
                     ComplaintId = complaint.ComplaintId,
                     AssignedToId = staff.StaffId,
-                    AssignedById = request.AssignedById ?? Guid.Empty,
+                    AssignedById = request.AssignedById,
                     AssignedAt = DateTime.Now,
                     AssignmentType = "Manual",
                     AssignmentNotes = request.AssignmentNotes ?? "Assigned by admin",
@@ -88,135 +73,242 @@ namespace CCMW.Controllers
 
                 db.ComplaintAssignments.Add(assignment);
 
+                // Update complaint
+                complaint.AssignedToId = staff.StaffId;
+                complaint.AssignedAt = DateTime.Now;
+                complaint.CurrentStatus = ComplaintStatus.Assigned;
+                complaint.StatusUpdatedAt = DateTime.Now;
+
                 // Update staff stats
                 staff.TotalAssignments += 1;
                 staff.PendingAssignments += 1;
 
                 // Add status history
-                db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
+                var history = new ComplaintStatusHistories
                 {
                     HistoryId = Guid.NewGuid(),
                     ComplaintId = complaint.ComplaintId,
-                    PreviousStatus = oldStatus.ToString(),
-                    NewStatus = ComplaintStatus.Assigned.ToString(),
-                    ChangedById = request.AssignedById ?? Guid.Empty,
+                    PreviousStatus = "Approved",
+                    NewStatus = "Assigned",
+                    ChangedById = request.AssignedById,
                     ChangedAt = DateTime.Now,
                     Notes = $"Assigned to {staff.User?.FullName ?? staff.EmployeeId}"
-                });
+                };
 
+                db.ComplaintStatusHistories.Add(history);
                 db.SaveChanges();
+
+                // Get the staff name for response
+                string staffName = staff.User?.FullName ?? staff.EmployeeId ?? "Staff Member";
 
                 return Ok(new
                 {
+                    success = true,
                     message = "Complaint assigned successfully",
                     assignmentId = assignment.AssignmentId,
                     complaintId = complaint.ComplaintId,
-                    assignedTo = staff.User?.FullName ?? staff.EmployeeId,
+                    complaintNumber = complaint.ComplaintNumber,
+                    assignedTo = staffName,
                     assignedAt = assignment.AssignedAt
                 });
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                return InternalServerError();
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    error = ex.Message,
+                    stackTrace = ex.StackTrace?.ToString()
+                });
             }
         }
 
         // =====================================================
-        // REASSIGN COMPLAINT - FIXED VERSION
+        // REJECT COMPLAINT
         // =====================================================
         [HttpPost]
-        [Route("reassign")]
-        public IHttpActionResult ReassignComplaint([FromBody] AssignmentRequest request)
+        [Route("reject")]
+        public IHttpActionResult RejectComplaint([FromBody] RejectRequest request)
         {
             try
             {
-                if (request == null)
-                    return BadRequest("Assignment data is required.");
+                if (request == null || request.ComplaintId == Guid.Empty)
+                    return BadRequest("Complaint ID is required.");
+
+                if (string.IsNullOrEmpty(request.Reason))
+                    return BadRequest("Rejection reason is required.");
 
                 var complaint = db.Complaints.FirstOrDefault(c => c.ComplaintId == request.ComplaintId);
                 if (complaint == null)
                     return NotFound("Complaint not found.");
 
-                var newStaff = db.StaffProfiles
-                    .Include(s => s.User)
-                    .FirstOrDefault(s => s.StaffId == request.AssignedToId);
-
-                if (newStaff == null)
-                    return NotFound("Staff not found.");
-
-                if (!newStaff.IsAvailable)
-                    return BadRequest("Staff is not available for assignment.");
-
-                // Deactivate old assignments
-                var oldAssignments = db.ComplaintAssignments
-                    .Where(a => a.ComplaintId == complaint.ComplaintId && a.IsActive)
-                    .ToList();
-
-                foreach (var old in oldAssignments)
-                {
-                    old.IsActive = false;
-
-                    // Update old staff's pending count
-                    if (old.AssignedToId != null)
-                    {
-                        var oldStaff = db.StaffProfiles.FirstOrDefault(s => s.StaffId == old.AssignedToId);
-                        if (oldStaff != null)
-                            oldStaff.PendingAssignments = Math.Max(oldStaff.PendingAssignments - 1, 0);
-                    }
-                }
-
                 // Update complaint
-                var oldStatus = complaint.CurrentStatus;
-                complaint.AssignedToId = newStaff.StaffId;
-                complaint.AssignedAt = DateTime.Now;
-                complaint.CurrentStatus = ComplaintStatus.Assigned;
+                var oldStatus = complaint.CurrentStatus.ToString();
+                complaint.CurrentStatus = ComplaintStatus.Rejected;
+                complaint.RejectionReason = request.Reason;
                 complaint.StatusUpdatedAt = DateTime.Now;
 
-                // Create new assignment
-                var assignment = new ComplaintAssignment
-                {
-                    AssignmentId = Guid.NewGuid(),
-                    ComplaintId = complaint.ComplaintId,
-                    AssignedToId = newStaff.StaffId,
-                    AssignedById = request.AssignedById ?? Guid.Empty,
-                    AssignedAt = DateTime.Now,
-                    AssignmentType = "Reassignment",
-                    AssignmentNotes = request.AssignmentNotes ?? "Reassigned by admin",
-                    ExpectedCompletionDate = request.ExpectedCompletionDate ?? DateTime.Now.AddDays(3),
-                    IsActive = true
-                };
-
-                db.ComplaintAssignments.Add(assignment);
-
-                // Update new staff stats
-                newStaff.TotalAssignments += 1;
-                newStaff.PendingAssignments += 1;
-
                 // Add status history
-                db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
+                var history = new ComplaintStatusHistories
                 {
                     HistoryId = Guid.NewGuid(),
                     ComplaintId = complaint.ComplaintId,
-                    PreviousStatus = oldStatus.ToString(),
-                    NewStatus = ComplaintStatus.Assigned.ToString(),
-                    ChangedById = request.AssignedById ?? Guid.Empty,
+                    PreviousStatus = oldStatus,
+                    NewStatus = "Rejected",
+                    ChangedById = request.RejectedById,
                     ChangedAt = DateTime.Now,
-                    Notes = $"Reassigned to {newStaff.User?.FullName ?? newStaff.EmployeeId}"
-                });
+                    ChangeReason = request.Reason,
+                    Notes = $"Rejected by admin: {request.Reason}"
+                };
 
+                db.ComplaintStatusHistories.Add(history);
                 db.SaveChanges();
 
                 return Ok(new
                 {
-                    message = "Complaint reassigned successfully",
-                    assignmentId = assignment.AssignmentId,
+                    success = true,
+                    message = "Complaint rejected successfully",
                     complaintId = complaint.ComplaintId,
-                    assignedTo = newStaff.User?.FullName ?? newStaff.EmployeeId
+                    reason = request.Reason
                 });
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                return InternalServerError();
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    error = ex.Message
+                });
+            }
+        }
+
+        // =====================================================
+        // GET ALL COMPLAINTS FOR ROUTING (SYSTEM ADMIN)
+        // =====================================================
+        [HttpGet]
+        [Route("complaints/all")]
+        public IHttpActionResult GetAllComplaintsForRouting()
+        {
+            try
+            {
+                var complaints = db.Complaints
+                    .Include(c => c.Category)
+                    .Include(c => c.Zone)
+                    .Where(c => c.CurrentStatus == ComplaintStatus.Approved && c.AssignedToId == null)
+                    .OrderByDescending(c => c.Priority == "High" ? 1 : c.Priority == "Medium" ? 2 : 3)
+                    .ThenByDescending(c => c.CreatedAt)
+                    .Select(c => new
+                    {
+                        c.ComplaintId,
+                        c.ComplaintNumber,
+                        c.Title,
+                        c.Description,
+                        c.LocationAddress,
+                        c.Priority,
+                        c.UpvoteCount,
+                        c.CreatedAt,
+                        c.DepartmentId,
+                        DepartmentName = "", // Department name comes from Department navigation property if available
+                        CurrentStatus = (int)c.CurrentStatus,
+                        c.AssignedToId,
+                        c.AssignedAt,
+                        CategoryName = c.Category != null ? c.Category.CategoryName : "General",
+                        ZoneName = c.Zone != null ? c.Zone.ZoneName : "Unknown"
+                    })
+                    .ToList();
+
+                return Ok(complaints);
+            }
+            catch (Exception ex)
+            {
+                return Content(HttpStatusCode.InternalServerError, new { error = ex.Message });
+            }
+        }
+
+        // =====================================================
+        // GET COMPLAINTS BY DEPARTMENT (DEPARTMENT ADMIN)
+        // =====================================================
+        [HttpGet]
+        [Route("complaints/department/{departmentId}")]
+        public IHttpActionResult GetComplaintsByDepartment(Guid departmentId)
+        {
+            try
+            {
+                var complaints = db.Complaints
+                    .Include(c => c.Category)
+                    .Include(c => c.Zone)
+                    .Where(c => c.DepartmentId == departmentId && c.CurrentStatus == ComplaintStatus.Approved && c.AssignedToId == null)
+                    .OrderByDescending(c => c.Priority == "High" ? 1 : c.Priority == "Medium" ? 2 : 3)
+                    .ThenByDescending(c => c.CreatedAt)
+                    .Select(c => new
+                    {
+                        c.ComplaintId,
+                        c.ComplaintNumber,
+                        c.Title,
+                        c.Description,
+                        c.LocationAddress,
+                        c.Priority,
+                        c.UpvoteCount,
+                        c.CreatedAt,
+                        c.DepartmentId,
+                        DepartmentName = "",
+                        CurrentStatus = (int)c.CurrentStatus,
+                        c.AssignedToId,
+                        c.AssignedAt,
+                        CategoryName = c.Category != null ? c.Category.CategoryName : "General",
+                        ZoneName = c.Zone != null ? c.Zone.ZoneName : "Unknown"
+                    })
+                    .ToList();
+
+                return Ok(complaints);
+            }
+            catch (Exception ex)
+            {
+                return Content(HttpStatusCode.InternalServerError, new { error = ex.Message });
+            }
+        }
+
+        // =====================================================
+        // GET AVAILABLE STAFF
+        // =====================================================
+        [HttpGet]
+        [Route("staff/available")]
+        public IHttpActionResult GetAvailableStaff([FromUri] string departmentId = null)
+        {
+            try
+            {
+                // Use StaffProfiles with User navigation property
+                var query = db.StaffProfiles
+                    .Include(s => s.User)
+                    .Where(s => s.IsAvailable == true);
+
+                if (!string.IsNullOrEmpty(departmentId) && Guid.TryParse(departmentId, out var deptId))
+                {
+                    query = query.Where(s => s.DepartmentId == deptId);
+                }
+
+                var staff = query
+                    .Select(s => new
+                    {
+                        s.StaffId,
+                        s.UserId,
+                        FullName = s.User != null ? s.User.FullName : s.EmployeeId,
+                        Email = s.User != null ? s.User.Email : "",
+                        PhoneNumber = s.User != null ? s.User.PhoneNumber : "",
+                        s.DepartmentId,
+                        DepartmentName = "", // Department name from Department navigation if available
+                        s.Role,
+                        s.PendingAssignments,
+                        s.PerformanceScore,
+                        s.IsAvailable
+                    })
+                    .ToList();
+
+                return Ok(new { TotalAvailable = staff.Count, Staff = staff });
+            }
+            catch (Exception ex)
+            {
+                return Content(HttpStatusCode.InternalServerError, new { error = ex.Message });
             }
         }
 
@@ -224,7 +316,7 @@ namespace CCMW.Controllers
         // GET ASSIGNMENTS BY STAFF
         // =====================================================
         [HttpGet]
-        [Route("staff/{staffId}")]
+        [Route("staff/{staffId}/assignments")]
         public IHttpActionResult GetAssignmentsByStaff(Guid staffId)
         {
             try
@@ -237,8 +329,8 @@ namespace CCMW.Controllers
                     {
                         a.AssignmentId,
                         a.ComplaintId,
-                        ComplaintTitle = a.Complaint.Title,
-                        ComplaintNumber = a.Complaint.ComplaintNumber,
+                        ComplaintTitle = a.Complaint != null ? a.Complaint.Title : "N/A",
+                        ComplaintNumber = a.Complaint != null ? a.Complaint.ComplaintNumber : "N/A",
                         a.AssignmentType,
                         a.AssignmentNotes,
                         a.AssignedAt,
@@ -246,55 +338,17 @@ namespace CCMW.Controllers
                         a.AcceptedAt,
                         a.StartedAt,
                         a.CompletedAt,
-                        IsOverdue = a.ExpectedCompletionDate.HasValue && a.ExpectedCompletionDate.Value < DateTime.Now && a.CompletedAt == null,
-                        Status = a.CompletedAt != null ? "Completed" :
-                                 a.StartedAt != null ? "InProgress" :
-                                 a.AcceptedAt != null ? "Accepted" : "Assigned"
+                        IsOverdue = a.ExpectedCompletionDate.HasValue && a.ExpectedCompletionDate.Value < DateTime.Now && !a.CompletedAt.HasValue,
+                        Status = a.CompletedAt.HasValue ? "Completed" :
+                                 a.StartedAt.HasValue ? "In Progress" :
+                                 a.AcceptedAt.HasValue ? "Accepted" : "Assigned"
                     }).ToList();
 
                 return Ok(assignments);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                return InternalServerError();
-            }
-        }
-
-        // =====================================================
-        // GET COMPLAINT ASSIGNMENT HISTORY
-        // =====================================================
-        [HttpGet]
-        [Route("complaint/{complaintId}/history")]
-        public IHttpActionResult GetComplaintAssignmentHistory(Guid complaintId)
-        {
-            try
-            {
-                var assignments = db.ComplaintAssignments
-                    .Include(a => a.AssignedTo)
-                    .Include(a => a.AssignedTo.User)
-                    .Where(a => a.ComplaintId == complaintId)
-                    .OrderByDescending(a => a.AssignedAt)
-                    .Select(a => new
-                    {
-                        a.AssignmentId,
-                        a.AssignedToId,
-                        AssignedToName = a.AssignedTo.User.FullName,
-                        a.AssignedById,
-                        a.AssignmentType,
-                        a.AssignmentNotes,
-                        a.AssignedAt,
-                        a.ExpectedCompletionDate,
-                        a.AcceptedAt,
-                        a.StartedAt,
-                        a.CompletedAt,
-                        a.IsActive
-                    }).ToList();
-
-                return Ok(assignments);
-            }
-            catch (Exception)
-            {
-                return InternalServerError();
+                return Content(HttpStatusCode.InternalServerError, new { error = ex.Message });
             }
         }
 
@@ -308,7 +362,6 @@ namespace CCMW.Controllers
             try
             {
                 var assignment = db.ComplaintAssignments
-                    .Include(a => a.Complaint)
                     .FirstOrDefault(a => a.AssignmentId == request.AssignmentId && a.IsActive);
 
                 if (assignment == null)
@@ -335,25 +388,25 @@ namespace CCMW.Controllers
                     assignment.IsActive = false;
 
                     // Update complaint status
-                    var complaint = assignment.Complaint;
+                    var complaint = db.Complaints.FirstOrDefault(c => c.ComplaintId == assignment.ComplaintId);
                     if (complaint != null)
                     {
-                        var oldStatus = complaint.CurrentStatus;
                         complaint.CurrentStatus = ComplaintStatus.Resolved;
                         complaint.ResolvedAt = DateTime.Now;
                         complaint.StatusUpdatedAt = DateTime.Now;
 
                         // Add status history
-                        db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
+                        var history = new ComplaintStatusHistories
                         {
                             HistoryId = Guid.NewGuid(),
                             ComplaintId = complaint.ComplaintId,
-                            PreviousStatus = oldStatus.ToString(),
-                            NewStatus = ComplaintStatus.Resolved.ToString(),
-                            ChangedById = assignment.AssignedToId ?? Guid.Empty,
+                            PreviousStatus = "Assigned",
+                            NewStatus = "Resolved",
+                            ChangedById = assignment.AssignedById,
                             ChangedAt = DateTime.Now,
                             Notes = "Complaint resolved by staff"
-                        });
+                        };
+                        db.ComplaintStatusHistories.Add(history);
                     }
 
                     // Update staff stats
@@ -375,144 +428,42 @@ namespace CCMW.Controllers
                 db.SaveChanges();
                 return Ok(new { message = $"Assignment status updated to {request.Status} successfully" });
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                return InternalServerError();
+                return Content(HttpStatusCode.InternalServerError, new { error = ex.Message });
             }
         }
 
         // =====================================================
-        // GET ASSIGNMENT STATS
+        // GET PENDING COMPLAINTS COUNT
         // =====================================================
         [HttpGet]
-        [Route("stats")]
-        public IHttpActionResult GetAssignmentStats()
+        [Route("pending-count")]
+        public IHttpActionResult GetPendingComplaintsCount()
         {
             try
             {
-                var today = DateTime.Today;
-                var startOfWeek = today.AddDays(-(int)today.DayOfWeek);
-                var startOfMonth = new DateTime(today.Year, today.Month, 1);
-
-                var stats = new
-                {
-                    TotalAssignments = db.ComplaintAssignments.Count(),
-                    PendingAssignments = db.ComplaintAssignments.Count(a => a.CompletedAt == null && a.IsActive),
-                    CompletedToday = db.ComplaintAssignments.Count(a =>
-                        a.CompletedAt.HasValue && a.CompletedAt.Value.Date == today),
-                    CompletedThisWeek = db.ComplaintAssignments.Count(a =>
-                        a.CompletedAt.HasValue && a.CompletedAt.Value >= startOfWeek),
-                    CompletedThisMonth = db.ComplaintAssignments.Count(a =>
-                        a.CompletedAt.HasValue && a.CompletedAt.Value >= startOfMonth),
-                    AverageCompletionTime = db.ComplaintAssignments
-                        .Where(a => a.CompletedAt.HasValue)
-                        .Average(a => (double?)DbFunctions.DiffHours(a.AssignedAt, a.CompletedAt)) ?? 0
-                };
-                return Ok(stats);
+                var count = db.Complaints
+                    .Count(c => c.CurrentStatus == ComplaintStatus.Approved && c.AssignedToId == null);
+                return Ok(new { pendingCount = count });
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                return Ok(new
-                {
-                    TotalAssignments = 0,
-                    PendingAssignments = 0,
-                    CompletedToday = 0,
-                    CompletedThisWeek = 0,
-                    CompletedThisMonth = 0,
-                    AverageCompletionTime = 0
-                });
+                return Content(HttpStatusCode.InternalServerError, new { error = ex.Message });
             }
         }
 
-        // =====================================================
-        // GET PENDING COMPLAINTS FOR ASSIGNMENT
-        // =====================================================
-        [HttpGet]
-        [Route("pending")]
-        public IHttpActionResult GetPendingComplaints()
+        protected override void Dispose(bool disposing)
         {
-            try
-            {
-                var complaints = db.Complaints
-                    .Include(c => c.Category)
-                    .Include(c => c.Zone)
-                    .Where(c => c.CurrentStatus == ComplaintStatus.Approved &&
-                               c.AssignedToId == null)
-                    .OrderByDescending(c => c.Priority == "High" ? 1 : c.Priority == "Medium" ? 2 : 3)
-                    .ThenBy(c => c.CreatedAt)
-                    .Take(50)
-                    .Select(c => new
-                    {
-                        c.ComplaintId,
-                        c.ComplaintNumber,
-                        c.Title,
-                        c.Description,
-                        c.LocationAddress,
-                        c.Priority,
-                        c.UpvoteCount,
-                        c.CreatedAt,
-                        CategoryName = c.Category != null ? c.Category.CategoryName : "General",
-                        ZoneName = c.Zone != null ? c.Zone.ZoneName : "Unknown",
-                        DepartmentId = c.DepartmentId
-                    })
-                    .ToList();
-
-                return Ok(complaints);
-            }
-            catch (Exception)
-            {
-                return InternalServerError();
-            }
-        }
-
-        // =====================================================
-        // REJECT COMPLAINT
-        // =====================================================
-        [HttpPost]
-        [Route("~/api/complaints/{id}/reject")]
-        public IHttpActionResult RejectComplaint(Guid id, [FromBody] RejectRequest request)
-        {
-            try
-            {
-                var complaint = db.Complaints.Find(id);
-                if (complaint == null)
-                    return NotFound("Complaint not found.");
-
-                if (string.IsNullOrEmpty(request?.Reason))
-                    return BadRequest("Rejection reason is required.");
-
-                var oldStatus = complaint.CurrentStatus;
-                var oldSubmissionStatus = complaint.SubmissionStatus;
-
-                complaint.CurrentStatus = ComplaintStatus.Rejected;
-                complaint.SubmissionStatus = SubmissionStatus.Rejected;
-                complaint.RejectionReason = request.Reason;
-                complaint.StatusUpdatedAt = DateTime.Now;
-
-                db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
-                {
-                    HistoryId = Guid.NewGuid(),
-                    ComplaintId = id,
-                    PreviousStatus = oldStatus.ToString(),
-                    NewStatus = ComplaintStatus.Rejected.ToString(),
-                    ChangeReason = request.Reason,
-                    ChangedAt = DateTime.Now
-                });
-
-                db.SaveChanges();
-                return Ok(new { message = "Complaint rejected successfully" });
-            }
-            catch (Exception)
-            {
-                return InternalServerError();
-            }
-        }
-
-        public class RejectRequest
-        {
-            public string Reason { get; set; }
+            if (disposing)
+                db.Dispose();
+            base.Dispose(disposing);
         }
     }
+
+    // =====================================================
+    // DTO CLASSES
+    // =====================================================
 
     public class AssignmentRequest
     {
@@ -521,6 +472,13 @@ namespace CCMW.Controllers
         public Guid? AssignedById { get; set; }
         public string AssignmentNotes { get; set; }
         public DateTime? ExpectedCompletionDate { get; set; }
+    }
+
+    public class RejectRequest
+    {
+        public Guid ComplaintId { get; set; }
+        public string Reason { get; set; }
+        public Guid? RejectedById { get; set; }
     }
 
     public class AssignmentStatusUpdate
