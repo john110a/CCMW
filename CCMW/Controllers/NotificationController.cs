@@ -25,7 +25,8 @@ namespace CCMW.Controllers
                     return Content(HttpStatusCode.NotFound, new { error = "User not found" });
                 }
 
-                // Get notifications for the user
+                // Get notifications for the user - WITHOUT GetTimeAgo in LINQ
+                // Using the actual column names from your database
                 var notifications = db.Notifications
                     .Where(n => n.UserId == userId)
                     .OrderByDescending(n => n.CreatedAt)
@@ -33,19 +34,34 @@ namespace CCMW.Controllers
                     {
                         n.NotificationId,
                         n.UserId,
-                        n.NotificationType,
-                        n.Title,
-                        n.Message,
-                        n.ReferenceType,
-                        n.ReferenceId,
-                        n.IsRead,
-                        n.CreatedAt,
-                        n.ReadAt,
-                        TimeAgo = GetTimeAgo(n.CreatedAt)
+                        NotificationType = n.NotificationType,
+                        Title = n.Title,
+                        Message = n.Message,
+                        ReferenceType = n.ReferenceType,
+                        ReferenceId = n.ReferenceId,
+                        IsRead = n.IsRead,
+                        CreatedAt = n.CreatedAt,
+                        ReadAt = n.ReadAt
                     })
                     .ToList();
 
-                return Ok(notifications);
+                // Calculate TimeAgo in memory after retrieving data
+                var result = notifications.Select(n => new
+                {
+                    n.NotificationId,
+                    n.UserId,
+                    n.NotificationType,
+                    n.Title,
+                    n.Message,
+                    n.ReferenceType,
+                    n.ReferenceId,
+                    n.IsRead,
+                    n.CreatedAt,
+                    n.ReadAt,
+                    TimeAgo = GetTimeAgo(n.CreatedAt)
+                }).ToList();
+
+                return Ok(result);
             }
             catch (Exception ex)
             {
