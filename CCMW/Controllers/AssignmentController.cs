@@ -19,7 +19,7 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // ASSIGN COMPLAINT - FIXED WITH ENUM VALUES
+        // ASSIGN COMPLAINT - FIXED VERSION
         // =====================================================
         [HttpPost]
         [Route("assign")]
@@ -42,13 +42,25 @@ namespace CCMW.Controllers
                 if (complaint == null)
                     return NotFound("Complaint not found.");
 
-                // Get staff from StaffProfiles table
+                // Get staff from StaffProfiles table (this matches your database)
                 var staff = db.StaffProfiles
                     .Include(s => s.User)
                     .FirstOrDefault(s => s.StaffId == request.AssignedToId);
 
                 if (staff == null)
                 {
+                    // Try to find by UserId as fallback
+                    staff = db.StaffProfiles
+                        .Include(s => s.User)
+                        .FirstOrDefault(s => s.UserId == request.AssignedToId);
+                }
+
+                if (staff == null)
+                {
+                    // Debug: Log all staff IDs in the database
+                    var allStaffIds = db.StaffProfiles.Select(s => s.StaffId).ToList();
+                    System.Diagnostics.Debug.WriteLine($"Available Staff IDs in DB: {string.Join(", ", allStaffIds)}");
+
                     return NotFound($"Staff not found with ID: {request.AssignedToId}");
                 }
 
@@ -56,7 +68,7 @@ namespace CCMW.Controllers
                 if (complaint.AssignedToId != null && complaint.AssignedToId != Guid.Empty)
                     return BadRequest("Complaint is already assigned to another staff member.");
 
-                // Check if complaint is approved - using enum comparison
+                // Check if complaint is approved
                 if (complaint.CurrentStatus != ComplaintStatus.Approved)
                     return BadRequest($"Complaint status must be 'Approved' to assign. Current status: {complaint.CurrentStatus}");
 
@@ -76,7 +88,7 @@ namespace CCMW.Controllers
 
                 db.ComplaintAssignments.Add(assignment);
 
-                // Update complaint - using enum
+                // Update complaint
                 complaint.AssignedToId = staff.StaffId;
                 complaint.AssignedAt = DateTime.Now;
                 complaint.CurrentStatus = ComplaintStatus.Assigned;
@@ -178,7 +190,7 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // GET ALL COMPLAINTS FOR ROUTING - USING ENUM
+        // GET ALL COMPLAINTS FOR ROUTING
         // =====================================================
         [HttpGet]
         [Route("complaints/all")]
@@ -189,6 +201,7 @@ namespace CCMW.Controllers
                 var complaints = db.Complaints
                     .Include(c => c.Category)
                     .Include(c => c.Zone)
+                    .Include(c => c.Department)
                     .Where(c => c.CurrentStatus == ComplaintStatus.Approved && c.AssignedToId == null)
                     .OrderByDescending(c => c.Priority == "High" ? 1 : c.Priority == "Medium" ? 2 : 3)
                     .ThenByDescending(c => c.CreatedAt)
@@ -221,7 +234,7 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // GET COMPLAINTS BY DEPARTMENT - USING ENUM
+        // GET COMPLAINTS BY DEPARTMENT
         // =====================================================
         [HttpGet]
         [Route("complaints/department/{departmentId}")]
@@ -232,6 +245,7 @@ namespace CCMW.Controllers
                 var complaints = db.Complaints
                     .Include(c => c.Category)
                     .Include(c => c.Zone)
+                    .Include(c => c.Department)
                     .Where(c => c.DepartmentId == departmentId && c.CurrentStatus == ComplaintStatus.Approved && c.AssignedToId == null)
                     .OrderByDescending(c => c.Priority == "High" ? 1 : c.Priority == "Medium" ? 2 : 3)
                     .ThenByDescending(c => c.CreatedAt)
@@ -264,7 +278,7 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // REJECT COMPLAINT - USING ENUM
+        // REJECT COMPLAINT
         // =====================================================
         [HttpPost]
         [Route("reject")]
@@ -282,13 +296,11 @@ namespace CCMW.Controllers
                 if (complaint == null)
                     return NotFound("Complaint not found.");
 
-                // Update complaint - using enum
                 var oldStatus = complaint.CurrentStatus.ToString();
                 complaint.CurrentStatus = ComplaintStatus.Rejected;
                 complaint.RejectionReason = request.Reason;
                 complaint.StatusUpdatedAt = DateTime.Now;
 
-                // Add status history
                 var history = new ComplaintStatusHistories
                 {
                     HistoryId = Guid.NewGuid(),
@@ -311,25 +323,6 @@ namespace CCMW.Controllers
                     complaintId = complaint.ComplaintId,
                     reason = request.Reason
                 });
-            }
-            catch (Exception ex)
-            {
-                return Content(HttpStatusCode.InternalServerError, new { error = ex.Message });
-            }
-        }
-
-        // =====================================================
-        // GET PENDING COMPLAINTS COUNT
-        // =====================================================
-        [HttpGet]
-        [Route("pending-count")]
-        public IHttpActionResult GetPendingComplaintsCount()
-        {
-            try
-            {
-                var count = db.Complaints
-                    .Count(c => c.CurrentStatus == ComplaintStatus.Approved && c.AssignedToId == null);
-                return Ok(new { pendingCount = count });
             }
             catch (Exception ex)
             {
