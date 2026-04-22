@@ -19,7 +19,7 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // ASSIGN COMPLAINT - FIXED VERSION
+        // ASSIGN COMPLAINT - WITH ENHANCED DEBUGGING
         // =====================================================
         [HttpPost]
         [Route("assign")]
@@ -27,6 +27,8 @@ namespace CCMW.Controllers
         {
             try
             {
+                System.Diagnostics.Debug.WriteLine("========== ASSIGNMENT DEBUG START ==========");
+
                 // Validate request
                 if (request == null)
                     return BadRequest("Assignment data is required.");
@@ -37,32 +39,56 @@ namespace CCMW.Controllers
                 if (request.AssignedToId == Guid.Empty)
                     return BadRequest("Staff ID is required.");
 
+                System.Diagnostics.Debug.WriteLine($"Looking for Complaint ID: {request.ComplaintId}");
+
                 // Get complaint
                 var complaint = db.Complaints.FirstOrDefault(c => c.ComplaintId == request.ComplaintId);
                 if (complaint == null)
                     return NotFound("Complaint not found.");
 
-                // Get staff from StaffProfiles table (this matches your database)
+                System.Diagnostics.Debug.WriteLine($"Found Complaint: {complaint.ComplaintNumber} - {complaint.Title}");
+
+                System.Diagnostics.Debug.WriteLine($"Looking for Staff ID: {request.AssignedToId}");
+
+                // Check if StaffProfiles table has any records
+                var totalStaff = db.StaffProfiles.Count();
+                System.Diagnostics.Debug.WriteLine($"Total staff in StaffProfiles table: {totalStaff}");
+
+                // List all staff IDs for debugging
+                var allStaffIds = db.StaffProfiles.Select(s => s.StaffId).ToList();
+                System.Diagnostics.Debug.WriteLine($"All Staff IDs in DB: {string.Join(", ", allStaffIds)}");
+
+                // Check if the specific staff ID exists
+                var staffExists = db.StaffProfiles.Any(s => s.StaffId == request.AssignedToId);
+                System.Diagnostics.Debug.WriteLine($"Staff ID exists in StaffProfiles: {staffExists}");
+
+                // Try to find by StaffId
                 var staff = db.StaffProfiles
                     .Include(s => s.User)
                     .FirstOrDefault(s => s.StaffId == request.AssignedToId);
 
                 if (staff == null)
                 {
+                    System.Diagnostics.Debug.WriteLine("Staff not found by StaffId, trying by UserId...");
                     // Try to find by UserId as fallback
                     staff = db.StaffProfiles
                         .Include(s => s.User)
                         .FirstOrDefault(s => s.UserId == request.AssignedToId);
+
+                    if (staff != null)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Found staff by UserId: {staff.StaffId}");
+                    }
                 }
 
                 if (staff == null)
                 {
-                    // Debug: Log all staff IDs in the database
-                    var allStaffIds = db.StaffProfiles.Select(s => s.StaffId).ToList();
-                    System.Diagnostics.Debug.WriteLine($"Available Staff IDs in DB: {string.Join(", ", allStaffIds)}");
-
+                    System.Diagnostics.Debug.WriteLine("========== STAFF NOT FOUND ==========");
                     return NotFound($"Staff not found with ID: {request.AssignedToId}");
                 }
+
+                System.Diagnostics.Debug.WriteLine($"Found Staff: {staff.StaffId} - {staff.EmployeeId}");
+                System.Diagnostics.Debug.WriteLine($"Staff User: {staff.User?.FullName ?? "No User linked"}");
 
                 // Check if complaint is already assigned
                 if (complaint.AssignedToId != null && complaint.AssignedToId != Guid.Empty)
@@ -116,6 +142,8 @@ namespace CCMW.Controllers
                 // Get staff name for response
                 string staffName = staff.User?.FullName ?? staff.EmployeeId ?? "Staff Member";
 
+                System.Diagnostics.Debug.WriteLine("========== ASSIGNMENT SUCCESSFUL ==========");
+
                 return Ok(new
                 {
                     success = true,
@@ -129,6 +157,8 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"ERROR: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"STACK TRACE: {ex.StackTrace}");
                 return Content(HttpStatusCode.InternalServerError, new
                 {
                     success = false,
@@ -322,6 +352,39 @@ namespace CCMW.Controllers
                     message = "Complaint rejected successfully",
                     complaintId = complaint.ComplaintId,
                     reason = request.Reason
+                });
+            }
+            catch (Exception ex)
+            {
+                return Content(HttpStatusCode.InternalServerError, new { error = ex.Message });
+            }
+        }
+
+        // =====================================================
+        // DEBUG ENDPOINT - Check StaffProfiles table
+        // =====================================================
+        [HttpGet]
+        [Route("debug/staff")]
+        public IHttpActionResult DebugGetAllStaff()
+        {
+            try
+            {
+                var allStaff = db.StaffProfiles
+                    .Select(s => new
+                    {
+                        s.StaffId,
+                        s.UserId,
+                        s.EmployeeId,
+                        s.DepartmentId,
+                        s.Role,
+                        s.IsAvailable
+                    })
+                    .ToList();
+
+                return Ok(new
+                {
+                    totalStaff = allStaff.Count,
+                    staff = allStaff
                 });
             }
             catch (Exception ex)
