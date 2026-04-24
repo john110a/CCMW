@@ -36,9 +36,8 @@ namespace CCMW.Models
         [Column("status")]
         public string Status { get; set; }
 
-        // ✅ Priority used for assignment
         [Column("priority")]
-        public string Priority { get; set; } // Low, Medium, High, Critical
+        public string Priority { get; set; }
 
         [Column("escalation_level")]
         public int EscalationLevel { get; set; } = 0;
@@ -49,7 +48,7 @@ namespace CCMW.Models
         [Column("resolved_at")]
         public DateTime? ResolvedAt { get; set; }
 
-        // 📍 Location
+        // Location
         [Column("location_address")]
         public string LocationAddress { get; set; }
 
@@ -62,14 +61,14 @@ namespace CCMW.Models
         [Column("location_landmark")]
         public string LocationLandmark { get; set; }
 
-        // ✅ Assignment
+        // Assignment
         [Column("assigned_to_id")]
         public Guid? AssignedToId { get; set; }
 
         [Column("assigned_at")]
         public DateTime? AssignedAt { get; set; }
 
-        // ✅ Status control (ONLY THESE ARE USED)
+        // Status
         [Column("SubmissionStatus")]
         public SubmissionStatus SubmissionStatus { get; set; }
 
@@ -86,6 +85,9 @@ namespace CCMW.Models
         public DateTime? StatusUpdatedAt { get; set; }
 
         // Analytics
+        [Column("UpvoteCount")]
+        public int UpvoteCount { get; set; }
+
         [Column("ViewCount")]
         public int ViewCount { get; set; }
 
@@ -94,9 +96,6 @@ namespace CCMW.Models
 
         [Column("MergedIntoComplaintId")]
         public Guid? MergedIntoComplaintId { get; set; }
-
-        // REMOVED: [ForeignKey("MergedIntoComplaintId")]
-        public virtual Complaint MergedIntoComplaint { get; set; }
 
         [Column("UpdatedAt")]
         public DateTime? UpdatedAt { get; set; }
@@ -113,22 +112,36 @@ namespace CCMW.Models
         [Column("ComplaintNumber")]
         public string ComplaintNumber { get; set; }
 
-        [Column("UpvoteCount")]
-        public int UpvoteCount { get; set; }
-
-        // Navigation Properties - ALL FOREIGN KEY ATTRIBUTES REMOVED
-        public virtual User Citizen { get; set; }
-        public virtual ComplaintCategory Category { get; set; }
-        public virtual Department Department { get; set; }
-        public virtual Zone Zone { get; set; }
-        public virtual User ApprovedBy { get; set; }
-        public virtual StaffProfile AssignedTo { get; set; }
-
         [Column("ResolutionNotes")]
         public string ResolutionNotes { get; set; }
 
         [Column("ReopenedAt")]
         public DateTime? ReopenedAt { get; set; }
+
+        // ========================
+        // Navigation Properties - FIXED WITH [ForeignKey]
+        // ========================
+
+        [ForeignKey("CitizenId")]
+        public virtual User Citizen { get; set; }
+
+        [ForeignKey("CategoryId")]
+        public virtual ComplaintCategory Category { get; set; }
+
+        [ForeignKey("DepartmentId")]
+        public virtual Department Department { get; set; }
+
+        [ForeignKey("ZoneId")]
+        public virtual Zone Zone { get; set; }
+
+        [ForeignKey("ApprovedById")]
+        public virtual User ApprovedBy { get; set; }
+
+        [ForeignKey("AssignedToId")]
+        public virtual StaffProfile AssignedTo { get; set; }
+
+        [ForeignKey("MergedIntoComplaintId")]
+        public virtual Complaint MergedIntoComplaint { get; set; }
 
         // Collections
         public virtual ICollection<ComplaintAssignment> Assignments { get; set; }
@@ -136,7 +149,7 @@ namespace CCMW.Models
         public virtual ICollection<ComplaintUpvote> Upvotes { get; set; }
         public virtual ICollection<ComplaintPhoto> ComplaintPhotos { get; set; }
         public virtual ICollection<Escalation> Escalations { get; set; }
-        public virtual ICollection<ComplaintFeedback> Feedback { get; set; } = new HashSet<ComplaintFeedback>();
+        public virtual ICollection<ComplaintFeedback> Feedback { get; set; }
 
         public Complaint()
         {
@@ -148,13 +161,11 @@ namespace CCMW.Models
             Feedback = new HashSet<ComplaintFeedback>();
         }
 
-        // Optional: Calculated property if you need escalation date
         [NotMapped]
         public DateTime? LatestEscalationDate
         {
             get
             {
-                // Get the most recent escalation date from Escalations collection
                 return Escalations?.OrderByDescending(e => e.EscalatedAt)
                                   .FirstOrDefault()?.EscalatedAt;
             }

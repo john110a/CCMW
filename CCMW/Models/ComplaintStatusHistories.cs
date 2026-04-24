@@ -28,10 +28,13 @@ namespace CCMW.Models
         public string ChangeReason { get; set; }
         public string Notes { get; set; }
 
-      
+        // ========================
+        // Navigation Properties - FIXED
+        // ========================
+        [ForeignKey("ComplaintId")]
         public virtual Complaint Complaint { get; set; }
 
-        
+        [ForeignKey("ChangedById")]
         public virtual User ChangedBy { get; set; }
     }
 }

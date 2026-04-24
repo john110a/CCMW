@@ -52,17 +52,19 @@ public class User
     [Column("LastLogin")]
     public DateTime? LastLogin { get; set; }
 
-    // Navigation Properties - NO FOREIGN KEY ATTRIBUTES!
+    // Navigation Properties
     public virtual CitizenProfile CitizenProfile { get; set; }
     public virtual StaffProfile StaffProfile { get; set; }
-    public virtual Zone Zone { get; set; }  // REMOVED [ForeignKey("ZoneId")]
+    public virtual Zone Zone { get; set; }
 
     // Collections
     public virtual ICollection<Complaint> Complaints { get; set; } = new HashSet<Complaint>();
-    public virtual ICollection<ComplaintAssignment> ComplaintAssignments { get; set; } = new HashSet<ComplaintAssignment>();
     public virtual ICollection<ComplaintUpvote> Upvotes { get; set; } = new HashSet<ComplaintUpvote>();
     public virtual ICollection<ComplaintPhoto> UploadedPhotos { get; set; } = new HashSet<ComplaintPhoto>();
     public virtual ICollection<ComplaintStatusHistories> ComplaintStatusHistories { get; set; } = new HashSet<ComplaintStatusHistories>();
     public virtual ICollection<ActivityLog> ActivityLogs { get; set; } = new HashSet<ActivityLog>();
+
+    // ✅ FIXED: Removed duplicate ComplaintAssignments collection
+    // Only keep AssignedAssignments which is properly mapped in DbContext
     public virtual ICollection<ComplaintAssignment> AssignedAssignments { get; set; } = new HashSet<ComplaintAssignment>();
 }

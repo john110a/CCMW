@@ -5,7 +5,6 @@ public class CCMWDbContext : DbContext
 {
     public CCMWDbContext() : base("name=CCMWConnectionString")
     {
-        // CRITICAL: Disable lazy loading to prevent automatic navigation property loading
         this.Configuration.LazyLoadingEnabled = false;
         this.Configuration.ProxyCreationEnabled = false;
     }
@@ -43,7 +42,7 @@ public class CCMWDbContext : DbContext
         base.OnModelCreating(modelBuilder);
 
         // =====================================================
-        // TABLE MAPPINGS - Match SQL table names exactly
+        // TABLE MAPPINGS
         // =====================================================
         modelBuilder.Entity<User>().ToTable("Users");
         modelBuilder.Entity<CitizenProfile>().ToTable("Citizen_Profile");
@@ -70,7 +69,7 @@ public class CCMWDbContext : DbContext
         modelBuilder.Entity<ContractorPerformanceHistory>().ToTable("ContractorPerformanceHistories");
 
         // =====================================================
-        // COLUMN MAPPINGS - Match SQL column names exactly
+        // COLUMN MAPPINGS
         // =====================================================
 
         // User Entity
@@ -204,9 +203,9 @@ public class CCMWDbContext : DbContext
             .Property(c => c.Title).HasColumnName("title");
         modelBuilder.Entity<Complaint>()
             .Property(c => c.Description).HasColumnName("description");
-        // FIXED: There were duplicate Status/CurrentStatus mappings
+        // ✅ FIXED: Legacy Status string maps to "status" column
         modelBuilder.Entity<Complaint>()
-            .Property(c => c.CurrentStatus).HasColumnName("status");
+            .Property(c => c.Status).HasColumnName("status");
         modelBuilder.Entity<Complaint>()
             .Property(c => c.Priority).HasColumnName("priority");
         modelBuilder.Entity<Complaint>()
@@ -253,6 +252,7 @@ public class CCMWDbContext : DbContext
             .Property(c => c.AssignedAt).HasColumnName("assigned_at");
         modelBuilder.Entity<Complaint>()
             .Property(c => c.SubmissionStatus).HasColumnName("SubmissionStatus");
+        // ✅ FIXED: Only ONE mapping for CurrentStatus - removed duplicate "status" mapping
         modelBuilder.Entity<Complaint>()
             .Property(c => c.CurrentStatus).HasColumnName("CurrentStatus");
         modelBuilder.Entity<Complaint>()
@@ -422,9 +422,7 @@ public class CCMWDbContext : DbContext
         modelBuilder.Entity<ComplaintCategory>()
             .Property(c => c.CreatedAt).HasColumnName("created_at");
 
-        // =====================================================
-        // FIXED: Contractor Entity - Correct column names to match database
-        // =====================================================
+        // Contractor Entity
         modelBuilder.Entity<Contractor>()
             .Property(c => c.ContractorId).HasColumnName("contractor_id");
         modelBuilder.Entity<Contractor>()
@@ -435,15 +433,12 @@ public class CCMWDbContext : DbContext
             .Property(c => c.ContactPersonName).HasColumnName("contact_person_name");
         modelBuilder.Entity<Contractor>()
             .Property(c => c.ContactPersonPhone).HasColumnName("contact_person_phone");
-        // FIXED: Changed from contact_person_email to contact_email to match database
         modelBuilder.Entity<Contractor>()
             .Property(c => c.ContactEmail).HasColumnName("contact_email");
         modelBuilder.Entity<Contractor>()
             .Property(c => c.CompanyAddress).HasColumnName("company_address");
-        // FIXED: Changed from contract_start_date to contract_start to match database
         modelBuilder.Entity<Contractor>()
             .Property(c => c.ContractStart).HasColumnName("contract_start");
-        // FIXED: Changed from contract_end_date to contract_end to match database
         modelBuilder.Entity<Contractor>()
             .Property(c => c.ContractEnd).HasColumnName("contract_end");
         modelBuilder.Entity<Contractor>()
@@ -492,7 +487,7 @@ public class CCMWDbContext : DbContext
             .Property(h => h.Notes).HasColumnName("Notes");
 
         // =====================================================
-        // RELATIONSHIPS - CLEAN, NO DUPLICATES
+        // RELATIONSHIPS
         // =====================================================
 
         // User - CitizenProfile (1:1)
@@ -506,63 +501,70 @@ public class CCMWDbContext : DbContext
             .WithOptional(u => u.StaffProfile)
             .WillCascadeOnDelete(false);
 
-        // User - Complaints (1:Many)
+        // User - Complaints via CitizenId
         modelBuilder.Entity<Complaint>()
             .HasRequired(c => c.Citizen)
             .WithMany(u => u.Complaints)
             .HasForeignKey(c => c.CitizenId)
             .WillCascadeOnDelete(false);
 
-        // User - Uploaded Photos (1:Many)
+        // User - ApprovedBy on Complaint
+        modelBuilder.Entity<Complaint>()
+            .HasOptional(c => c.ApprovedBy)
+            .WithMany()
+            .HasForeignKey(c => c.ApprovedById)
+            .WillCascadeOnDelete(false);
+
+        // User - Uploaded Photos
         modelBuilder.Entity<ComplaintPhoto>()
             .HasOptional(p => p.UploadedBy)
             .WithMany(u => u.UploadedPhotos)
             .HasForeignKey(p => p.UploadedById)
             .WillCascadeOnDelete(false);
 
-        // User - Upvotes (1:Many)
+        // User - Upvotes
         modelBuilder.Entity<ComplaintUpvote>()
             .HasRequired(u => u.Citizen)
             .WithMany(c => c.Upvotes)
             .HasForeignKey(u => u.CitizenId)
             .WillCascadeOnDelete(false);
 
-        // User - Status History (1:Many)
+        // User - Status History
         modelBuilder.Entity<ComplaintStatusHistories>()
             .HasOptional(h => h.ChangedBy)
             .WithMany(u => u.ComplaintStatusHistories)
             .HasForeignKey(h => h.ChangedById)
             .WillCascadeOnDelete(false);
 
-        // User - Appeals (as Citizen) (1:Many)
+        // User - Appeals (as Citizen)
         modelBuilder.Entity<Appeal>()
             .HasRequired(a => a.Citizen)
             .WithMany()
             .HasForeignKey(a => a.CitizenId)
             .WillCascadeOnDelete(false);
 
-        // User - Appeals (as Reviewer) (1:Many)
+        // User - Appeals (as Reviewer)
         modelBuilder.Entity<Appeal>()
             .HasOptional(a => a.ReviewedBy)
             .WithMany()
             .HasForeignKey(a => a.ReviewedById)
             .WillCascadeOnDelete(false);
 
-        // User - ActivityLogs (1:Many)
+        // User - ActivityLogs
         modelBuilder.Entity<ActivityLog>()
             .HasRequired(a => a.User)
             .WithMany(u => u.ActivityLogs)
             .HasForeignKey(a => a.UserId)
             .WillCascadeOnDelete(false);
 
-        // User - Zone (1:Many)
+        // User - Zone
         modelBuilder.Entity<User>()
             .HasOptional(u => u.Zone)
             .WithMany(z => z.Users)
             .HasForeignKey(u => u.ZoneId)
             .WillCascadeOnDelete(false);
 
-        // User - AssignedAssignments (1:Many)
+        // User - AssignedAssignments
         modelBuilder.Entity<ComplaintAssignment>()
             .HasOptional(a => a.AssignedBy)
             .WithMany(u => u.AssignedAssignments)
@@ -594,13 +596,6 @@ public class CCMWDbContext : DbContext
             .HasForeignKey(c => c.ZoneId)
             .WillCascadeOnDelete(false);
 
-        // Complaint - ApprovedBy
-        modelBuilder.Entity<Complaint>()
-            .HasOptional(c => c.ApprovedBy)
-            .WithMany()
-            .HasForeignKey(c => c.ApprovedById)
-            .WillCascadeOnDelete(false);
-
         // Complaint - AssignedTo (Staff)
         modelBuilder.Entity<Complaint>()
             .HasOptional(c => c.AssignedTo)
@@ -626,7 +621,7 @@ public class CCMWDbContext : DbContext
             .HasForeignKey(a => a.ComplaintId)
             .WillCascadeOnDelete(false);
 
-        // ComplaintAssignment - AssignedTo (Staff) - THIS IS THE CRITICAL FIX
+        // ComplaintAssignment - AssignedTo (Staff)
         modelBuilder.Entity<ComplaintAssignment>()
             .HasOptional(a => a.AssignedTo)
             .WithMany(s => s.Assignments)

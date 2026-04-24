@@ -1,7 +1,6 @@
 ﻿using System;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
-using CCMW.Models;
 
 namespace CCMW.Models
 {
@@ -14,7 +13,6 @@ namespace CCMW.Models
         // ========================
         // Foreign Keys
         // ========================
-
         [Column("complaint_id")]
         public Guid ComplaintId { get; set; }
 
@@ -27,7 +25,6 @@ namespace CCMW.Models
         // ========================
         // Assignment Info
         // ========================
-
         [Column("assigned_at")]
         public DateTime AssignedAt { get; set; } = DateTime.Now;
 
@@ -53,11 +50,15 @@ namespace CCMW.Models
         public DateTime? CompletedAt { get; set; }
 
         // ========================
-        // Navigation Properties - NO ATTRIBUTES!
+        // Navigation Properties - FIXED
         // ========================
-
+        [ForeignKey("ComplaintId")]
         public virtual Complaint Complaint { get; set; }
+
+        [ForeignKey("AssignedToId")]
         public virtual StaffProfile AssignedTo { get; set; }
+
+        [ForeignKey("AssignedById")]
         public virtual User AssignedBy { get; set; }
     }
 }
