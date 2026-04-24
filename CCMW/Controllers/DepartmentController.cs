@@ -780,22 +780,22 @@ namespace CCMW.Controllers
         public string Notes { get; set; }
     }
 
-    public class DepartmentStaffDto
-    {
-        public Guid StaffId { get; set; }
-        public Guid UserId { get; set; }
-        public string FullName { get; set; }
-        public string Email { get; set; }
-        public string PhoneNumber { get; set; }
-        public Guid? DepartmentId { get; set; }
-        public string Role { get; set; }
-        public string EmployeeId { get; set; }
-        public int TotalAssignments { get; set; }
-        public int CompletedAssignments { get; set; }
-        public int PendingAssignments { get; set; }
-        public decimal PerformanceScore { get; set; }
-        public bool IsAvailable { get; set; }
-    }
+    //public class DepartmentStaffDto
+    //{
+    //    public Guid StaffId { get; set; }
+    //    public Guid UserId { get; set; }
+    //    public string FullName { get; set; }
+    //    public string Email { get; set; }
+    //    public string PhoneNumber { get; set; }
+    //    public Guid? DepartmentId { get; set; }
+    //    public string Role { get; set; }
+    //    public string EmployeeId { get; set; }
+    //    public int TotalAssignments { get; set; }
+    //    public int CompletedAssignments { get; set; }
+    //    public int PendingAssignments { get; set; }
+    //    public decimal PerformanceScore { get; set; }
+    //    public bool IsAvailable { get; set; }
+    //}
 
     public class ComplaintDto
     {
