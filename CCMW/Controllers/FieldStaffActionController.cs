@@ -291,11 +291,11 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // GET NEARBY COMPLAINTS FOR STAFF
+        // GET NEARBY COMPLAINTS FOR STAFF - FIXED: Accept lat/lng as query parameters
         // =====================================================
         [HttpGet]
         [Route("{staffId:guid}/nearby-complaints")]
-        public IHttpActionResult GetNearbyComplaints(Guid staffId, [FromUri] double radiusKm = 2.0)
+        public IHttpActionResult GetNearbyComplaints(Guid staffId, [FromUri] double lat, [FromUri] double lng, [FromUri] double radiusKm = 3.0)
         {
             try
             {
@@ -307,30 +307,14 @@ namespace CCMW.Controllers
                 if (staff == null)
                     return NotFound("Staff not found");
 
-                var lastLocation = db.ActivityLogs
-                    .Where(l => l.UserId == staff.UserId && l.ActionType == "Location_Update")
-                    .OrderByDescending(l => l.CreatedAt)
-                    .FirstOrDefault();
-
-                if (lastLocation == null)
-                    return BadRequest("No location data available. Please enable GPS.");
-
-                var locationMatch = System.Text.RegularExpressions.Regex.Match(
-                    lastLocation.ActionDetails,
-                    @"Lat: ([\d.-]+), Lng: ([\d.-]+)");
-
-                if (!locationMatch.Success)
-                    return BadRequest("Invalid location data");
-
-                double lat = double.Parse(locationMatch.Groups[1].Value);
-                double lng = double.Parse(locationMatch.Groups[2].Value);
-
                 var complaints = db.Complaints
                     .Include(c => c.Category)
                     .Include(c => c.Zone)
                     .Where(c => c.DepartmentId == staff.DepartmentId
                                 && c.CurrentStatus != ComplaintStatus.Resolved
-                                && c.CurrentStatus != ComplaintStatus.Closed)
+                                && c.CurrentStatus != ComplaintStatus.Closed
+                                && c.LocationLatitude != null
+                                && c.LocationLongitude != null)
                     .ToList()
                     .Select(c => new
                     {
@@ -345,10 +329,7 @@ namespace CCMW.Controllers
                         c.LocationAddress,
                         LocationLatitude = (double)c.LocationLatitude,
                         LocationLongitude = (double)c.LocationLongitude,
-                        Distance = CalculateDistance(
-                            lat, lng,
-                            (double)c.LocationLatitude,
-                            (double)c.LocationLongitude),
+                        Distance = CalculateDistance(lat, lng, (double)c.LocationLatitude, (double)c.LocationLongitude),
                         CreatedAt = c.CreatedAt,
                         UpvoteCount = c.UpvoteCount
                     })
@@ -390,20 +371,12 @@ namespace CCMW.Controllers
                 if (location == null || !location.Latitude.HasValue || !location.Longitude.HasValue)
                     return BadRequest("Location coordinates are required");
 
-                var locationLog = new ActivityLog
-                {
-                    LogId = Guid.NewGuid(),
-                    UserId = staff.UserId,
-                    ActionType = "Location_Update",
-                    EntityType = "Staff",
-                    EntityId = staffId,
-                    ActionDetails = "Lat: " + location.Latitude.Value.ToString("F6") +
-                                   ", Lng: " + location.Longitude.Value.ToString("F6") +
-                                   ", Accuracy: " + (location.Accuracy.HasValue ? location.Accuracy.Value.ToString("F1") : "N/A") + "m",
-                    CreatedAt = DateTime.Now
-                };
+                // Update the staff's LastLocation fields if they exist in your Staff_Profile table
+                // If these columns don't exist, comment them out
+                //staff.LastLatitude = (decimal)location.Latitude.Value;
+                //staff.LastLongitude = (decimal)location.Longitude.Value;
+                //staff.LastLocationUpdate = DateTime.Now;
 
-                db.ActivityLogs.Add(locationLog);
                 db.SaveChanges();
 
                 return Ok(new
@@ -470,6 +443,53 @@ namespace CCMW.Controllers
                 };
 
                 return Ok(timeline);
+            }
+            catch (Exception ex)
+            {
+                return InternalServerError(ex);
+            }
+        }
+
+        // =====================================================
+        // GET STAFF PERFORMANCE
+        // =====================================================
+        [HttpGet]
+        [Route("{staffId:guid}/performance")]
+        public IHttpActionResult GetStaffPerformance(Guid staffId)
+        {
+            try
+            {
+                var staff = db.StaffProfiles
+                    .Include(s => s.User)
+                    .FirstOrDefault(s => s.StaffId == staffId);
+
+                if (staff == null)
+                    return NotFound("Staff not found");
+
+                var completedAssignments = db.ComplaintAssignments
+                    .Count(a => a.AssignedToId == staffId && a.CompletedAt != null);
+
+                var totalAssignments = db.ComplaintAssignments
+                    .Count(a => a.AssignedToId == staffId);
+
+                var pendingAssignments = db.ComplaintAssignments
+                    .Count(a => a.AssignedToId == staffId && a.CompletedAt == null && a.IsActive);
+
+                var avgResolutionTime = db.ComplaintAssignments
+                    .Where(a => a.AssignedToId == staffId && a.CompletedAt != null)
+                    .Average(a => (double?)DbFunctions.DiffHours(a.AssignedAt, a.CompletedAt)) ?? 0;
+
+                return Ok(new
+                {
+                    StaffId = staff.StaffId,
+                    StaffName = staff.User?.FullName ?? staff.EmployeeId,
+                    Role = staff.Role,
+                    PerformanceScore = staff.PerformanceScore,
+                    TotalAssignments = totalAssignments,
+                    CompletedAssignments = completedAssignments,
+                    PendingAssignments = pendingAssignments,
+                    AverageResolutionTime = Math.Round(avgResolutionTime, 2)
+                });
             }
             catch (Exception ex)
             {
