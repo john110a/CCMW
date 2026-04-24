@@ -39,10 +39,10 @@ public class StaffProfile
     public int PendingAssignments { get; set; }
 
     [Column("average_resolution_time")]
-    public decimal AverageResolutionTime { get; set; }
+    public decimal? AverageResolutionTime { get; set; }
 
     [Column("performance_score")]
-    public decimal PerformanceScore { get; set; }
+    public decimal? PerformanceScore { get; set; }
 
     [Column("is_available")]
     public bool IsAvailable { get; set; } = true;
