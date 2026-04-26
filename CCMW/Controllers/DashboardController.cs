@@ -105,6 +105,7 @@ namespace CCMW.Controllers
                         zone_id as ZoneId,
                         title as Title,
                         description as Description,
+                        status as Status, 
                         priority as Priority,
                         escalation_level as EscalationLevel,
                         created_at as CreatedAt,
