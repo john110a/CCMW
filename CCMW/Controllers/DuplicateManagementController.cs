@@ -67,7 +67,10 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // GET DUPLICATE CLUSTERS - FULLY FIXED
+        // GET DUPLICATE CLUSTERS - WITH PHOTOS
+        // =====================================================
+        // =====================================================
+        // GET DUPLICATE CLUSTERS - FIXED VERSION
         // =====================================================
         [HttpGet]
         [Route("clusters")]
@@ -75,69 +78,74 @@ namespace CCMW.Controllers
         {
             try
             {
-                // Check if any clusters exist
+                // First, check if any clusters exist using a simple query
                 var clusterCount = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM DuplicateClusters").FirstOrDefault();
+                System.Diagnostics.Debug.WriteLine($"Cluster count: {clusterCount}");
+
                 if (clusterCount == 0) return Ok(new List<object>());
 
-                // Get clusters using raw SQL with proper casting
+                // Simplified query without OFFSET FETCH (use TOP instead for simplicity)
                 var clusters = db.Database.SqlQuery<ClusterDto>($@"
-                    SELECT 
-                        CAST(cluster_id AS uniqueidentifier) as ClusterId,
-                        CAST(primary_complaint_id AS uniqueidentifier) as PrimaryComplaintId,
-                        CAST(category_id AS uniqueidentifier) as CategoryId,
-                        CAST(location_latitude AS decimal(10,6)) as LocationLatitude,
-                        CAST(location_longitude AS decimal(10,6)) as LocationLongitude,
-                        cluster_radius_meters as ClusterRadiusMeters,
-                        total_complaints_merged as TotalComplaintsMerged,
-                        total_combined_upvotes as TotalCombinedUpvotes,
-                        created_at as CreatedAt,
-                        updated_at as UpdatedAt
-                    FROM DuplicateClusters
-                    ORDER BY created_at DESC
-                    OFFSET {(page - 1) * pageSize} ROWS FETCH NEXT {pageSize} ROWS ONLY
-                ").ToList();
+            SELECT TOP {pageSize}
+                CAST(cluster_id AS uniqueidentifier) as ClusterId,
+                CAST(primary_complaint_id AS uniqueidentifier) as PrimaryComplaintId,
+                CAST(category_id AS uniqueidentifier) as CategoryId,
+                CAST(location_latitude AS decimal(10,6)) as LocationLatitude,
+                CAST(location_longitude AS decimal(10,6)) as LocationLongitude,
+                cluster_radius_meters as ClusterRadiusMeters,
+                total_complaints_merged as TotalComplaintsMerged,
+                total_combined_upvotes as TotalCombinedUpvotes,
+                created_at as CreatedAt,
+                updated_at as UpdatedAt
+            FROM DuplicateClusters
+            ORDER BY created_at DESC
+        ").ToList();
+
+                System.Diagnostics.Debug.WriteLine($"Found {clusters.Count} clusters");
 
                 var result = new List<object>();
 
                 foreach (var cluster in clusters)
                 {
-                    // Get primary complaint details
-                    var primaryComplaint = db.Database.SqlQuery<PrimaryComplaintDto>($@"
-                        SELECT 
-                            CAST(c.complaint_id AS uniqueidentifier) as ComplaintId,
-                            c.title as Title,
-                            ISNULL(c.ComplaintNumber, 'N/A') as ComplaintNumber,
-                            ISNULL(c.description, '') as Description,
-                            ISNULL(c.location_address, '') as LocationAddress,
-                            c.created_at as CreatedAt,
-                            ISNULL(cat.category_name, 'General') as CategoryName,
-                            ISNULL(z.zone_name, 'Unknown') as ZoneName,
-                            ISNULL(u.full_name, 'Unknown') as CitizenName,
-                            ISNULL(c.UpvoteCount, 0) as UpvoteCount
-                        FROM Complaints c
-                        LEFT JOIN Complaint_Categories cat ON c.category_id = cat.category_id
-                        LEFT JOIN Zones z ON c.zone_id = z.zone_id
-                        LEFT JOIN Users u ON c.citizen_id = u.user_id
-                        WHERE c.complaint_id = '{cluster.PrimaryComplaintId}'
-                    ").FirstOrDefault();
+                    // Get primary complaint details - simplified without STUFF
+                    var primaryComplaint = db.Database.SqlQuery<PrimaryComplaintWithPhotosDto>($@"
+                SELECT 
+                    CAST(c.complaint_id AS uniqueidentifier) as ComplaintId,
+                    ISNULL(c.title, '') as Title,
+                    ISNULL(c.ComplaintNumber, 'N/A') as ComplaintNumber,
+                    ISNULL(c.description, '') as Description,
+                    ISNULL(c.location_address, '') as LocationAddress,
+                    c.created_at as CreatedAt,
+                    ISNULL(cat.category_name, 'General') as CategoryName,
+                    ISNULL(z.zone_name, 'Unknown') as ZoneName,
+                    ISNULL(u.full_name, 'Unknown') as CitizenName,
+                    ISNULL(c.UpvoteCount, 0) as UpvoteCount,
+                    '' as PhotoUrlsCsv
+                FROM Complaints c
+                LEFT JOIN Complaint_Categories cat ON c.category_id = cat.category_id
+                LEFT JOIN Zones z ON c.zone_id = z.zone_id
+                LEFT JOIN Users u ON c.citizen_id = u.user_id
+                WHERE c.complaint_id = '{cluster.PrimaryComplaintId}'
+            ").FirstOrDefault();
 
-                    // Get duplicate entries with proper decimal casting
-                    var entries = db.Database.SqlQuery<DuplicateEntryDto>($@"
-                        SELECT 
-                            CAST(e.entry_id AS uniqueidentifier) as EntryId,
-                            CAST(e.complaint_id AS uniqueidentifier) as ComplaintId,
-                            CAST(e.similarity_score AS decimal(10,2)) as SimilarityScore,
-                            e.merged_at as MergedAt,
-                            c.title as ComplaintTitle,
-                            ISNULL(c.ComplaintNumber, 'N/A') as ComplaintNumber,
-                            c.created_at as ComplaintCreatedAt,
-                            ISNULL(u.full_name, 'Unknown') as CitizenName
-                        FROM DuplicateEntries e
-                        INNER JOIN Complaints c ON e.complaint_id = c.complaint_id
-                        LEFT JOIN Users u ON c.citizen_id = u.user_id
-                        WHERE e.cluster_id = '{cluster.ClusterId}'
-                        ORDER BY e.merged_at
-                    ").ToList();
+                    // Get duplicate entries - simplified without STUFF
+                    var entries = db.Database.SqlQuery<DuplicateEntryWithPhotosDto>($@"
+                SELECT 
+                    CAST(e.entry_id AS uniqueidentifier) as EntryId,
+                    CAST(e.complaint_id AS uniqueidentifier) as ComplaintId,
+                    CAST(e.similarity_score AS decimal(10,2)) as SimilarityScore,
+                    e.merged_at as MergedAt,
+                    ISNULL(c.title, '') as ComplaintTitle,
+                    ISNULL(c.ComplaintNumber, 'N/A') as ComplaintNumber,
+                    c.created_at as ComplaintCreatedAt,
+                    ISNULL(u.full_name, 'Unknown') as CitizenName,
+                    '' as PhotoUrlsCsv
+                FROM DuplicateEntries e
+                INNER JOIN Complaints c ON e.complaint_id = c.complaint_id
+                LEFT JOIN Users u ON c.citizen_id = u.user_id
+                WHERE e.cluster_id = '{cluster.ClusterId}'
+                ORDER BY e.merged_at
+            ").ToList();
 
                     result.Add(new
                     {
@@ -153,7 +161,9 @@ namespace CCMW.Controllers
                             CategoryName = primaryComplaint.CategoryName ?? "General",
                             ZoneName = primaryComplaint.ZoneName ?? "Unknown",
                             CitizenName = primaryComplaint.CitizenName ?? "Unknown",
-                            UpvoteCount = primaryComplaint.UpvoteCount
+                            UpvoteCount = primaryComplaint.UpvoteCount,
+                            ComplaintPhotos = new List<object>(),
+                            Photos = new List<string>()
                         } : null,
                         TotalComplaintsMerged = cluster.TotalComplaintsMerged,
                         TotalCombinedUpvotes = cluster.TotalCombinedUpvotes,
@@ -173,7 +183,10 @@ namespace CCMW.Controllers
                                 Title = e.ComplaintTitle,
                                 ComplaintNumber = e.ComplaintNumber,
                                 CreatedAt = e.ComplaintCreatedAt,
-                                CitizenName = e.CitizenName
+                                CitizenName = e.CitizenName,
+                                UpvoteCount = 0,
+                                ComplaintPhotos = new List<object>(),
+                                Photos = new List<string>()
                             }
                         }).ToList()
                     });
@@ -183,11 +196,11 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"ERROR in GetDuplicateClusters: {ex}");
+                System.Diagnostics.Debug.WriteLine($"ERROR in GetDuplicateClusters: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Stack trace: {ex.StackTrace}");
                 return Ok(new List<object>());
             }
         }
-
         // =====================================================
         // GET DUPLICATE STATS
         // =====================================================
@@ -260,6 +273,7 @@ namespace CCMW.Controllers
                 var baseQuery = db.Complaints
                     .Include(c => c.Category)
                     .Include(c => c.Zone)
+                    .Include(c => c.ComplaintPhotos)
                     .Where(c => !c.IsDuplicate && c.MergedIntoComplaintId == null);
 
                 if (categoryId.HasValue)
@@ -291,7 +305,8 @@ namespace CCMW.Controllers
                                     CurrentStatus = complaint.CurrentStatus.ToString(),
                                     complaint.CreatedAt,
                                     CategoryName = complaint.Category?.CategoryName ?? "General",
-                                    ZoneName = complaint.Zone?.ZoneName ?? "Unknown"
+                                    ZoneName = complaint.Zone?.ZoneName ?? "Unknown",
+                                    Photos = complaint.ComplaintPhotos?.Select(p => p.PhotoUrl).ToList() ?? new List<string>()
                                 },
                                 DistanceMeters = Math.Round(distance * 1000, 2),
                                 TimeDiffHours = Math.Round(timeDiff, 1),
@@ -659,7 +674,6 @@ namespace CCMW.Controllers
                 .Where(c => c.ComplaintId != target.ComplaintId)
                 .Where(c => c.CategoryId == target.CategoryId)
                 .Where(c => !c.IsDuplicate && c.MergedIntoComplaintId == null)
-                //.Where(c => Math.Abs((c.CreatedAt - target.CreatedAt).TotalDays) <= 30)
                 .Where(c => CalculateDistance(
                     (double)c.LocationLatitude, (double)c.LocationLongitude,
                     (double)target.LocationLatitude, (double)target.LocationLongitude) < 0.2)
@@ -778,7 +792,7 @@ namespace CCMW.Controllers
             public DateTime UpdatedAt { get; set; }
         }
 
-        private class PrimaryComplaintDto
+        private class PrimaryComplaintWithPhotosDto
         {
             public Guid ComplaintId { get; set; }
             public string Title { get; set; }
@@ -790,9 +804,10 @@ namespace CCMW.Controllers
             public string ZoneName { get; set; }
             public string CitizenName { get; set; }
             public int UpvoteCount { get; set; }
+            public string PhotoUrlsCsv { get; set; }
         }
 
-        private class DuplicateEntryDto
+        private class DuplicateEntryWithPhotosDto
         {
             public Guid EntryId { get; set; }
             public Guid ComplaintId { get; set; }
@@ -802,6 +817,7 @@ namespace CCMW.Controllers
             public string ComplaintNumber { get; set; }
             public DateTime ComplaintCreatedAt { get; set; }
             public string CitizenName { get; set; }
+            public string PhotoUrlsCsv { get; set; }
         }
 
         public class MergeRequest

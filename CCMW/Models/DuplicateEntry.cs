@@ -1,5 +1,6 @@
 ﻿using CCMW.Models;
 using System;
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
@@ -37,6 +38,8 @@ public class DuplicateEntry
 
     [ForeignKey("MergedById")]
     public virtual User MergedBy { get; set; }
+    [NotMapped]
+    public List<ComplaintPhoto> ComplaintPhotos { get; set; }
 
     // Remove this duplicate property - it's already defined above as 'Cluster'
     // public DuplicateCluster DuplicateCluster { get; internal set; }

@@ -49,4 +49,9 @@ public class DuplicateCluster
     public virtual ComplaintCategory Category { get; set; }
 
     public virtual ICollection<DuplicateEntry> DuplicateEntries { get; set; }
+    [NotMapped]
+    public List<ComplaintPhoto> PrimaryComplaintPhotos { get; set; }
+
+    [NotMapped]
+    public List<ComplaintPhoto> AllClusterPhotos { get; set; }
 }
