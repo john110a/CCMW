@@ -69,23 +69,16 @@ namespace CCMW.Controllers
         // =====================================================
         // GET DUPLICATE CLUSTERS - WITH PHOTOS
         // =====================================================
-        // =====================================================
-        // GET DUPLICATE CLUSTERS - FIXED VERSION
-        // =====================================================
-        [HttpGet]
-        [Route("clusters")]
-        public IHttpActionResult GetDuplicateClusters([FromUri] int page = 1, [FromUri] int pageSize = 20)
-        {
-            try
-            {
-                // First, check if any clusters exist using a simple query
-                var clusterCount = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM DuplicateClusters").FirstOrDefault();
-                System.Diagnostics.Debug.WriteLine($"Cluster count: {clusterCount}");
+       [HttpGet]
+[Route("clusters")]
+public IHttpActionResult GetDuplicateClusters([FromUri] int page = 1, [FromUri] int pageSize = 20)
+{
+    try
+    {
+        var clusterCount = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM DuplicateClusters").FirstOrDefault();
+        if (clusterCount == 0) return Ok(new List<object>());
 
-                if (clusterCount == 0) return Ok(new List<object>());
-
-                // Simplified query without OFFSET FETCH (use TOP instead for simplicity)
-                var clusters = db.Database.SqlQuery<ClusterDto>($@"
+        var clusters = db.Database.SqlQuery<ClusterDto>($@"
             SELECT TOP {pageSize}
                 CAST(cluster_id AS uniqueidentifier) as ClusterId,
                 CAST(primary_complaint_id AS uniqueidentifier) as PrimaryComplaintId,
@@ -101,14 +94,12 @@ namespace CCMW.Controllers
             ORDER BY created_at DESC
         ").ToList();
 
-                System.Diagnostics.Debug.WriteLine($"Found {clusters.Count} clusters");
+        var result = new List<object>();
 
-                var result = new List<object>();
-
-                foreach (var cluster in clusters)
-                {
-                    // Get primary complaint details - simplified without STUFF
-                    var primaryComplaint = db.Database.SqlQuery<PrimaryComplaintWithPhotosDto>($@"
+        foreach (var cluster in clusters)
+        {
+            // Get primary complaint with photos using SQL
+            var primaryComplaint = db.Database.SqlQuery<PrimaryComplaintWithPhotosDto>($@"
                 SELECT 
                     CAST(c.complaint_id AS uniqueidentifier) as ComplaintId,
                     ISNULL(c.title, '') as Title,
@@ -120,7 +111,12 @@ namespace CCMW.Controllers
                     ISNULL(z.zone_name, 'Unknown') as ZoneName,
                     ISNULL(u.full_name, 'Unknown') as CitizenName,
                     ISNULL(c.UpvoteCount, 0) as UpvoteCount,
-                    '' as PhotoUrlsCsv
+                    STUFF((
+                        SELECT ',' + ISNULL(photo_url, '')
+                        FROM Complaint_Photos p
+                        WHERE p.complaint_id = c.complaint_id
+                        FOR XML PATH('')
+                    ), 1, 1, '') as PhotoUrlsCsv
                 FROM Complaints c
                 LEFT JOIN Complaint_Categories cat ON c.category_id = cat.category_id
                 LEFT JOIN Zones z ON c.zone_id = z.zone_id
@@ -128,8 +124,8 @@ namespace CCMW.Controllers
                 WHERE c.complaint_id = '{cluster.PrimaryComplaintId}'
             ").FirstOrDefault();
 
-                    // Get duplicate entries - simplified without STUFF
-                    var entries = db.Database.SqlQuery<DuplicateEntryWithPhotosDto>($@"
+            // Get duplicate entries with photos using SQL
+            var entries = db.Database.SqlQuery<DuplicateEntryWithPhotosDto>($@"
                 SELECT 
                     CAST(e.entry_id AS uniqueidentifier) as EntryId,
                     CAST(e.complaint_id AS uniqueidentifier) as ComplaintId,
@@ -139,7 +135,13 @@ namespace CCMW.Controllers
                     ISNULL(c.ComplaintNumber, 'N/A') as ComplaintNumber,
                     c.created_at as ComplaintCreatedAt,
                     ISNULL(u.full_name, 'Unknown') as CitizenName,
-                    '' as PhotoUrlsCsv
+                    ISNULL(c.UpvoteCount, 0) as UpvoteCount,
+                    STUFF((
+                        SELECT ',' + ISNULL(photo_url, '')
+                        FROM Complaint_Photos p
+                        WHERE p.complaint_id = c.complaint_id
+                        FOR XML PATH('')
+                    ), 1, 1, '') as PhotoUrlsCsv
                 FROM DuplicateEntries e
                 INNER JOIN Complaints c ON e.complaint_id = c.complaint_id
                 LEFT JOIN Users u ON c.citizen_id = u.user_id
@@ -147,60 +149,87 @@ namespace CCMW.Controllers
                 ORDER BY e.merged_at
             ").ToList();
 
-                    result.Add(new
-                    {
-                        cluster.ClusterId,
-                        PrimaryComplaint = primaryComplaint != null ? new
-                        {
-                            primaryComplaint.ComplaintId,
-                            primaryComplaint.Title,
-                            primaryComplaint.ComplaintNumber,
-                            primaryComplaint.Description,
-                            primaryComplaint.LocationAddress,
-                            primaryComplaint.CreatedAt,
-                            CategoryName = primaryComplaint.CategoryName ?? "General",
-                            ZoneName = primaryComplaint.ZoneName ?? "Unknown",
-                            CitizenName = primaryComplaint.CitizenName ?? "Unknown",
-                            UpvoteCount = primaryComplaint.UpvoteCount,
-                            ComplaintPhotos = new List<object>(),
-                            Photos = new List<string>()
-                        } : null,
-                        TotalComplaintsMerged = cluster.TotalComplaintsMerged,
-                        TotalCombinedUpvotes = cluster.TotalCombinedUpvotes,
-                        CreatedAt = cluster.CreatedAt,
-                        ClusterRadiusMeters = cluster.ClusterRadiusMeters,
-                        LocationLatitude = cluster.LocationLatitude,
-                        LocationLongitude = cluster.LocationLongitude,
-                        DuplicateCount = entries.Count,
-                        DuplicateEntries = entries.Select(e => new
-                        {
-                            e.EntryId,
-                            e.ComplaintId,
-                            SimilarityScore = e.SimilarityScore,
-                            e.MergedAt,
-                            Complaint = new
-                            {
-                                Title = e.ComplaintTitle,
-                                ComplaintNumber = e.ComplaintNumber,
-                                CreatedAt = e.ComplaintCreatedAt,
-                                CitizenName = e.CitizenName,
-                                UpvoteCount = 0,
-                                ComplaintPhotos = new List<object>(),
-                                Photos = new List<string>()
-                            }
-                        }).ToList()
-                    });
-                }
-
-                return Ok(result);
-            }
-            catch (Exception ex)
+            // Parse photos from CSV string
+            var primaryPhotos = new List<object>();
+            var primaryPhotoUrls = new List<string>();
+            if (!string.IsNullOrEmpty(primaryComplaint?.PhotoUrlsCsv))
             {
-                System.Diagnostics.Debug.WriteLine($"ERROR in GetDuplicateClusters: {ex.Message}");
-                System.Diagnostics.Debug.WriteLine($"Stack trace: {ex.StackTrace}");
-                return Ok(new List<object>());
+                var urls = primaryComplaint.PhotoUrlsCsv.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var url in urls)
+                {
+                    primaryPhotos.Add(new { PhotoUrl = url.Trim() });
+                    primaryPhotoUrls.Add(url.Trim());
+                }
             }
+
+            result.Add(new
+            {
+                cluster.ClusterId,
+                PrimaryComplaint = primaryComplaint != null ? new
+                {
+                    primaryComplaint.ComplaintId,
+                    primaryComplaint.Title,
+                    primaryComplaint.ComplaintNumber,
+                    primaryComplaint.Description,
+                    primaryComplaint.LocationAddress,
+                    primaryComplaint.CreatedAt,
+                    CategoryName = primaryComplaint.CategoryName ?? "General",
+                    ZoneName = primaryComplaint.ZoneName ?? "Unknown",
+                    CitizenName = primaryComplaint.CitizenName ?? "Unknown",
+                    UpvoteCount = primaryComplaint.UpvoteCount,
+                    ComplaintPhotos = primaryPhotos,
+                    Photos = primaryPhotoUrls
+                } : null,
+                TotalComplaintsMerged = cluster.TotalComplaintsMerged,
+                TotalCombinedUpvotes = cluster.TotalCombinedUpvotes,
+                CreatedAt = cluster.CreatedAt,
+                ClusterRadiusMeters = cluster.ClusterRadiusMeters,
+                LocationLatitude = cluster.LocationLatitude,
+                LocationLongitude = cluster.LocationLongitude,
+                DuplicateCount = entries.Count,
+                DuplicateEntries = entries.Select(e => 
+                {
+                    var entryPhotos = new List<object>();
+                    var entryPhotoUrls = new List<string>();
+                    if (!string.IsNullOrEmpty(e.PhotoUrlsCsv))
+                    {
+                        var urls = e.PhotoUrlsCsv.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                        foreach (var url in urls)
+                        {
+                            entryPhotos.Add(new { PhotoUrl = url.Trim() });
+                            entryPhotoUrls.Add(url.Trim());
+                        }
+                    }
+
+                    return new
+                    {
+                        e.EntryId,
+                        e.ComplaintId,
+                        SimilarityScore = e.SimilarityScore,
+                        e.MergedAt,
+                        Complaint = new
+                        {
+                            Title = e.ComplaintTitle,
+                            ComplaintNumber = e.ComplaintNumber,
+                            CreatedAt = e.ComplaintCreatedAt,
+                            CitizenName = e.CitizenName,
+                            UpvoteCount = e.UpvoteCount,
+                            ComplaintPhotos = entryPhotos,
+                            Photos = entryPhotoUrls
+                        }
+                    };
+                }).ToList()
+            });
         }
+
+        return Ok(result);
+    }
+    catch (Exception ex)
+    {
+        System.Diagnostics.Debug.WriteLine($"ERROR in GetDuplicateClusters: {ex.Message}");
+        return Ok(new List<object>());
+    }
+}
         // =====================================================
         // GET DUPLICATE STATS
         // =====================================================
@@ -818,6 +847,7 @@ namespace CCMW.Controllers
             public DateTime ComplaintCreatedAt { get; set; }
             public string CitizenName { get; set; }
             public string PhotoUrlsCsv { get; set; }
+            public object UpvoteCount { get; internal set; }
         }
 
         public class MergeRequest
