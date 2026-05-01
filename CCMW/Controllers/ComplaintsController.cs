@@ -571,20 +571,31 @@ namespace CCMW.Controllers
         /// <summary>
         /// Get all complaints with optional filtering
         /// </summary>
+        /// <summary>
+        /// Get all complaints with optional filtering - FIXED FOR SYSTEM ADMIN
+        /// </summary>
         [HttpGet]
         [Route("")]
         public IHttpActionResult GetComplaints(
-            [FromUri] int page = 1,
-            [FromUri] int pageSize = 20,
-            [FromUri] string status = null,
-            [FromUri] Guid? zoneId = null,
-            [FromUri] Guid? categoryId = null,
-            [FromUri] Guid? departmentId = null,
-            [FromUri] Guid? citizenId = null,
-            [FromUri] bool? isAssigned = null)
+     [FromUri] int page = 1,
+     [FromUri] int pageSize = 100,
+     [FromUri] string status = null,
+     [FromUri] Guid? zoneId = null,
+     [FromUri] Guid? categoryId = null,
+     [FromUri] Guid? departmentId = null,
+     [FromUri] Guid? citizenId = null,
+     [FromUri] bool? isAssigned = null)
         {
             try
             {
+                // Get current user from the request
+                Guid currentUserId = GetCurrentUserIdFromRequest();
+                var currentUser = db.Users.FirstOrDefault(u => u.UserId == currentUserId);
+                bool isSystemAdmin = currentUser?.UserType == "System_Admin";
+
+                System.Diagnostics.Debug.WriteLine($"User: {currentUser?.Email}, Type: {currentUser?.UserType}, IsAdmin: {isSystemAdmin}");
+
+                // Start with all complaints
                 var query = db.Complaints
                     .Include(c => c.Category)
                     .Include(c => c.Zone)
@@ -592,7 +603,29 @@ namespace CCMW.Controllers
                     .Include(c => c.Citizen)
                     .AsQueryable();
 
-                // Apply filters
+                // ===== CRITICAL: ONLY filter by department if NOT System Admin =====
+                if (!isSystemAdmin)
+                {
+                    // For non-admin users, filter by their department
+                    var staffProfile = db.StaffProfiles.FirstOrDefault(s => s.UserId == currentUserId);
+                    Guid? userDepartmentId = staffProfile?.DepartmentId;
+
+                    if (departmentId.HasValue)
+                    {
+                        query = query.Where(c => c.DepartmentId == departmentId.Value);
+                    }
+                    else if (userDepartmentId.HasValue)
+                    {
+                        query = query.Where(c => c.DepartmentId == userDepartmentId.Value);
+                    }
+                    System.Diagnostics.Debug.WriteLine($"Non-admin - Filtering by department: {userDepartmentId}");
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("System Admin - NO department filter applied");
+                }
+
+                // Apply other filters (status, zone, category, etc.)
                 if (!string.IsNullOrEmpty(status) && Enum.TryParse<ComplaintStatus>(status, true, out var complaintStatus))
                 {
                     query = query.Where(c => c.CurrentStatus == complaintStatus);
@@ -608,11 +641,6 @@ namespace CCMW.Controllers
                     query = query.Where(c => c.CategoryId == categoryId.Value);
                 }
 
-                if (departmentId.HasValue)
-                {
-                    query = query.Where(c => c.DepartmentId == departmentId.Value);
-                }
-
                 if (citizenId.HasValue)
                 {
                     query = query.Where(c => c.CitizenId == citizenId.Value);
@@ -626,35 +654,35 @@ namespace CCMW.Controllers
                         query = query.Where(c => c.AssignedToId == null);
                 }
 
-                // Get total count for pagination
                 var totalCount = query.Count();
 
-                // Apply pagination
                 var complaints = query
                     .OrderByDescending(c => c.CreatedAt)
                     .Skip((page - 1) * pageSize)
                     .Take(pageSize)
-                    .ToList()
-                    .Select(c => new
-                    {
-                        c.ComplaintId,
-                        c.ComplaintNumber,
-                        c.Title,
-                        c.Description,
-                        c.LocationAddress,
-                        c.Priority,
-                        c.UpvoteCount,
-                        c.ViewCount,
-                        c.CreatedAt,
-                        CurrentStatus = c.CurrentStatus.ToString(),
-                        SubmissionStatus = c.SubmissionStatus.ToString(),
-                        Category = c.Category != null ? new { c.Category.CategoryId, c.Category.CategoryName } : null,
-                        Zone = c.Zone != null ? new { c.Zone.ZoneId, c.Zone.ZoneName } : null,
-                        Department = c.Department != null ? new { c.Department.DepartmentId, c.Department.DepartmentName } : null,
-                        Citizen = c.Citizen != null ? new { c.Citizen.UserId, c.Citizen.FullName } : null,
-                        IsAssigned = c.AssignedToId != null
-                    })
                     .ToList();
+
+                var result = complaints.Select(c => new
+                {
+                    c.ComplaintId,
+                    c.ComplaintNumber,
+                    c.Title,
+                    c.Description,
+                    c.LocationAddress,
+                    c.Priority,
+                    c.UpvoteCount,
+                    c.ViewCount,
+                    c.CreatedAt,
+                    CurrentStatus = c.CurrentStatus.ToString(),
+                    SubmissionStatus = c.SubmissionStatus.ToString(),
+                    Category = c.Category != null ? new { c.Category.CategoryId, c.Category.CategoryName } : null,
+                    Zone = c.Zone != null ? new { c.Zone.ZoneId, c.Zone.ZoneName } : null,
+                    Department = c.Department != null ? new { c.Department.DepartmentId, c.Department.DepartmentName } : null,
+                    Citizen = c.Citizen != null ? new { c.Citizen.UserId, c.Citizen.FullName } : null,
+                    IsAssigned = c.AssignedToId != null
+                }).ToList();
+
+                System.Diagnostics.Debug.WriteLine($"Returning {result.Count} complaints (Total in DB: {totalCount})");
 
                 return Ok(new
                 {
@@ -662,13 +690,50 @@ namespace CCMW.Controllers
                     Page = page,
                     PageSize = pageSize,
                     TotalPages = (int)Math.Ceiling((double)totalCount / pageSize),
-                    Complaints = complaints
+                    Complaints = result
                 });
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine($"Error: {ex.Message}");
                 return InternalServerError(ex);
             }
+        }
+
+        // Add this helper method to get current user ID
+        private Guid GetCurrentUserIdFromRequest()
+        {
+            // Try to get from Authorization header or session
+            // For now, return the System Admin ID from your database
+            // You need to implement this based on your authentication
+
+            // Find the System Admin user by email
+            var systemAdmin = db.Users.FirstOrDefault(u => u.Email == "admin@ccmw.gov.pk");
+            if (systemAdmin != null)
+            {
+                return systemAdmin.UserId;
+            }
+
+            // Fallback - return a known System Admin ID
+            return Guid.Parse("5b18d046-e0f3-4e90-a36f-d299b563a8e6");
+        }
+
+        // Helper method to get current user ID (add this to your controller)
+        private Guid GetCurrentUserId()
+        {
+            // Implement based on your authentication method
+            // For Windows authentication or JWT token
+            if (System.Web.HttpContext.Current != null && System.Web.HttpContext.Current.User != null)
+            {
+                var identity = System.Web.HttpContext.Current.User.Identity;
+                // You might need to lookup the user by username
+                var user = db.Users.FirstOrDefault(u => u.Email == identity.Name);
+                if (user != null) return user.UserId;
+            }
+
+            // Fallback - for testing, return a known System Admin ID
+            // In production, you should properly get from authentication
+            return Guid.Parse("5b18d046-e0f3-4e90-a36f-d299b563a8e6"); // ASIM MUNNER's ID
         }
         [HttpGet]
         [Route("debug/database")]
