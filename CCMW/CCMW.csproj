@@ -268,6 +268,7 @@
     <Compile Include="Models\DTOs\RegisterRequest.cs" />
     <Compile Include="Models\DTOs\RequestDTOs.cs" />
     <Compile Include="Models\DTOs\ReviewAppealRequest.cs" />
+    <Compile Include="Models\FakeComplaintLog.cs" />
     <Compile Include="Models\Login.cs" />
     <Compile Include="Global.asax.cs">
       <DependentUpon>Global.asax</DependentUpon>

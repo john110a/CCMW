@@ -13,7 +13,6 @@ namespace CCMW.Controllers
     {
         private CCMWDbContext db = new CCMWDbContext();
 
-        // Renamed to avoid conflict with base NotFound method
         private IHttpActionResult NotFoundMessage(string message)
         {
             return Content(HttpStatusCode.NotFound, new { error = message });
@@ -26,7 +25,6 @@ namespace CCMW.Controllers
         {
             try
             {
-                // Get user with raw SQL
                 var user = db.Database.SqlQuery<User>(@"
                     SELECT 
                         user_id as UserId,
@@ -43,13 +41,16 @@ namespace CCMW.Controllers
                         ProfilePhotoUrl,
                         IsVerified,
                         UpdatedAt,
-                        LastLogin
+                        LastLogin,
+                        FakeStrikes,
+                        IsBanned,
+                        BanExpiryDate,
+                        LastFakeDate
                     FROM Users 
                     WHERE user_id = @p0", userId).FirstOrDefault();
 
                 if (user == null) return NotFoundMessage("User not found");
 
-                // Get citizen profile with raw SQL
                 var citizen = db.Database.SqlQuery<CitizenProfile>(@"
                     SELECT 
                         citizen_id as CitizenId,
@@ -67,7 +68,6 @@ namespace CCMW.Controllers
                     FROM Citizen_Profile 
                     WHERE user_id = @p0", userId).FirstOrDefault();
 
-                // Get zone with raw SQL if needed
                 Zone zone = null;
                 if (user.ZoneId.HasValue)
                 {
@@ -95,7 +95,7 @@ namespace CCMW.Controllers
                         WHERE zone_id = @p0", user.ZoneId.Value).FirstOrDefault();
                 }
 
-                // Get complaints with raw SQL
+                // ===== FIXED: Added IsFake, FakeVerifiedBy, FakeVerifiedAt columns =====
                 var complaints = db.Database.SqlQuery<Complaint>(@"
                     SELECT TOP 10 
                         complaint_id as ComplaintId,
@@ -131,15 +131,23 @@ namespace CCMW.Controllers
                         SubmissionStatus,
                         CurrentStatus,
                         ResolutionNotes,
-                        ReopenedAt  
+                        ReopenedAt,
+                        IsFake,           -- ← ADDED
+                        FakeVerifiedBy,   -- ← ADDED
+                        FakeVerifiedAt    -- ← ADDED
                     FROM Complaints 
                     WHERE citizen_id = @p0 
                     ORDER BY created_at DESC", userId).ToList();
 
-                // Statistics with raw SQL
-                var totalComplaints = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Complaints WHERE citizen_id = @p0", userId).FirstOrDefault();
-                var approvedComplaints = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Complaints WHERE citizen_id = @p0 AND SubmissionStatus = 1", userId).FirstOrDefault();
-                var resolvedComplaints = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Complaints WHERE citizen_id = @p0 AND CurrentStatus = 5", userId).FirstOrDefault();
+                var totalComplaints = db.Database.SqlQuery<int>(
+                    "SELECT COUNT(*) FROM Complaints WHERE citizen_id = @p0", userId).FirstOrDefault();
+
+                var approvedComplaints = db.Database.SqlQuery<int>(
+                    "SELECT COUNT(*) FROM Complaints WHERE citizen_id = @p0 AND SubmissionStatus = 1", userId).FirstOrDefault();
+
+                var resolvedComplaints = db.Database.SqlQuery<int>(
+                    "SELECT COUNT(*) FROM Complaints WHERE citizen_id = @p0 AND CurrentStatus = 5", userId).FirstOrDefault();
+
                 var pendingComplaints = db.Database.SqlQuery<int>(@"
                     SELECT COUNT(*) FROM Complaints 
                     WHERE citizen_id = @p0 AND CurrentStatus IN (0,1)", userId).FirstOrDefault();
@@ -156,7 +164,11 @@ namespace CCMW.Controllers
                     PendingComplaints = pendingComplaints,
                     UpvotesReceived = upvotesReceived,
                     LeaderboardRank = citizen?.LeaderboardRank ?? 0,
-                    BadgeLevel = citizen?.BadgeLevel ?? "Newcomer"
+                    BadgeLevel = citizen?.BadgeLevel ?? "Newcomer",
+                    FakeStrikes = user.FakeStrikes ?? 0,
+                    IsBanned = user.IsBanned ?? false,
+                    BanExpiryDate = user.BanExpiryDate,
+                    BanStatusMessage = GetBanStatusMessage(user)
                 };
 
                 var recentComplaints = complaints.Select(c => new
@@ -166,7 +178,8 @@ namespace CCMW.Controllers
                     c.Title,
                     CurrentStatus = c.CurrentStatus.ToString(),
                     c.CreatedAt,
-                    c.LocationAddress
+                    c.LocationAddress,
+                    c.IsFake
                 }).ToList();
 
                 return Ok(new
@@ -179,6 +192,10 @@ namespace CCMW.Controllers
                         user.PhoneNumber,
                         user.ProfilePhotoUrl,
                         user.IsVerified,
+                        user.FakeStrikes,
+                        user.IsBanned,
+                        user.BanExpiryDate,
+                        user.LastFakeDate,
                         Zone = zone != null ? new
                         {
                             zone.ZoneId,
@@ -197,14 +214,13 @@ namespace CCMW.Controllers
             }
         }
 
-        // ========== STAFF DASHBOARD - FIXED VERSION ==========
+        // ========== STAFF DASHBOARD ==========
         [HttpGet]
         [Route("staff/{staffId:guid}")]
         public IHttpActionResult GetStaffDashboard(Guid staffId)
         {
             try
             {
-                // Get staff with raw SQL
                 var staff = db.Database.SqlQuery<StaffProfile>(@"
                     SELECT 
                         staff_id as StaffId,
@@ -225,10 +241,8 @@ namespace CCMW.Controllers
 
                 if (staff == null) return NotFoundMessage("Staff not found");
 
-                // Get user info
                 var user = db.Users.FirstOrDefault(u => u.UserId == staff.UserId);
 
-                // Get department name
                 string departmentName = null;
                 if (staff.DepartmentId.HasValue)
                 {
@@ -236,7 +250,6 @@ namespace CCMW.Controllers
                     departmentName = department?.DepartmentName;
                 }
 
-                // Get assignments - FIXED: removed obsolete Status field
                 var assignments = db.ComplaintAssignments
                     .Where(a => a.AssignedToId == staffId && a.IsActive == true)
                     .OrderByDescending(a => a.AssignedAt)
@@ -260,7 +273,6 @@ namespace CCMW.Controllers
                 var completedAssignments = assignments.Count(a => a.Status == "Completed");
                 var pendingAssignments = assignments.Count(a => a.Status != "Completed");
 
-                // Calculate average resolution time
                 double avgResolutionTime = 0;
                 var completedWithTimes = assignments.Where(a => a.CompletedAt != null).ToList();
                 if (completedWithTimes.Any())
@@ -269,7 +281,6 @@ namespace CCMW.Controllers
                         (a.CompletedAt.Value - a.AssignedAt).TotalHours), 2);
                 }
 
-                // Calculate performance score
                 double performanceScore = 0;
                 if (totalAssignments > 0)
                 {
@@ -319,7 +330,6 @@ namespace CCMW.Controllers
         {
             try
             {
-                // Get department with raw SQL
                 var department = db.Database.SqlQuery<Department>(@"
                     SELECT 
                         department_id as DepartmentId,
@@ -343,8 +353,9 @@ namespace CCMW.Controllers
 
                 if (department == null) return NotFoundMessage("Department not found");
 
-                // Department statistics with raw SQL
-                var totalComplaints = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Complaints WHERE department_id = @p0", departmentId).FirstOrDefault();
+                var totalComplaints = db.Database.SqlQuery<int>(
+                    "SELECT COUNT(*) FROM Complaints WHERE department_id = @p0", departmentId).FirstOrDefault();
+
                 var activeComplaints = db.Database.SqlQuery<int>(@"
                     SELECT COUNT(*) FROM Complaints 
                     WHERE department_id = @p0 AND CurrentStatus IN (0,1,3,4)", departmentId).FirstOrDefault();
@@ -370,7 +381,6 @@ namespace CCMW.Controllers
                     AverageResolutionTimeDays = department.AverageResolutionTimeDays
                 };
 
-                // Staff performance with raw SQL
                 var staffPerformance = db.Database.SqlQuery<StaffPerformanceDto>(@"
                     SELECT TOP 5
                         s.staff_id as StaffId,
@@ -418,7 +428,6 @@ namespace CCMW.Controllers
         {
             try
             {
-                // System-wide statistics with raw SQL
                 var totalUsers = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Users").FirstOrDefault();
                 var totalCitizens = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Users WHERE user_type = 'Citizen'").FirstOrDefault();
                 var totalStaff = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Staff_Profile").FirstOrDefault();
@@ -430,6 +439,8 @@ namespace CCMW.Controllers
                 var overdueComplaints = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Complaints WHERE IsOverdue = 1").FirstOrDefault();
                 var totalDepartments = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Departments").FirstOrDefault();
                 var totalZones = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Zones").FirstOrDefault();
+                var bannedUsers = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Users WHERE IsBanned = 1").FirstOrDefault();
+                var fakeComplaints = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Complaints WHERE IsFake = 1").FirstOrDefault();
 
                 var stats = new
                 {
@@ -444,10 +455,11 @@ namespace CCMW.Controllers
                     OverdueComplaints = overdueComplaints,
                     TotalDepartments = totalDepartments,
                     TotalZones = totalZones,
+                    BannedUsers = bannedUsers,
+                    FakeComplaints = fakeComplaints,
                     AverageResponseTime = CalculateAverageResponseTime()
                 };
 
-                // Department performance with raw SQL
                 var deptPerformance = db.Database.SqlQuery<DepartmentPerformanceDto>(@"
                     SELECT TOP 5
                         department_id as DepartmentId,
@@ -460,7 +472,6 @@ namespace CCMW.Controllers
                     FROM Departments
                     ORDER BY performance_score DESC").ToList();
 
-                // Zone performance with raw SQL
                 var zonePerformance = db.Database.SqlQuery<ZonePerformanceDto>(@"
                     SELECT TOP 5
                         zone_id as ZoneId,
@@ -472,7 +483,6 @@ namespace CCMW.Controllers
                     FROM Zones
                     ORDER BY active_complaints_count DESC").ToList();
 
-                // Contractor performance with raw SQL
                 var contractorPerformance = db.Database.SqlQuery<ContractorPerformanceDto>(@"
                     SELECT TOP 5
                         c.contractor_id as ContractorId,
@@ -506,7 +516,6 @@ namespace CCMW.Controllers
         {
             try
             {
-                // Get contractor with raw SQL
                 var contractor = db.Database.SqlQuery<Contractor>(@"
                     SELECT 
                         contractor_id as ContractorId,
@@ -530,7 +539,6 @@ namespace CCMW.Controllers
 
                 if (contractor == null) return NotFoundMessage("Contractor not found");
 
-                // Get assigned zones with raw SQL
                 var assignedZones = db.Database.SqlQuery<AssignedZoneDto>(@"
                     SELECT 
                         cza.assignment_id as AssignmentId,
@@ -549,7 +557,6 @@ namespace CCMW.Controllers
                     INNER JOIN Zones z ON cza.zone_id = z.zone_id
                     WHERE cza.contractor_id = @p0 AND cza.is_active = 1", contractorId).ToList();
 
-                // Get performance history with raw SQL
                 var performanceHistory = db.Database.SqlQuery<PerformanceHistoryDto>(@"
                     SELECT TOP 6
                         history_id as HistoryId,
@@ -567,7 +574,6 @@ namespace CCMW.Controllers
                     WHERE contractor_id = @p0
                     ORDER BY review_period_end DESC", contractorId).ToList();
 
-                // Calculate days remaining - FIXED: DateTime has no HasValue
                 int daysRemaining = 0;
                 if (contractor.ContractEnd > DateTime.Now)
                 {
@@ -613,6 +619,26 @@ namespace CCMW.Controllers
                 System.Diagnostics.Debug.WriteLine("CONTRACTOR DASHBOARD ERROR: " + ex.ToString());
                 return InternalServerError(ex);
             }
+        }
+
+        // ========== HELPERS ==========
+
+        private string GetBanStatusMessage(User user)
+        {
+            int strikes = user.FakeStrikes ?? 0;
+            bool isBanned = user.IsBanned ?? false;
+            DateTime? banExpiry = user.BanExpiryDate;
+
+            if (isBanned && banExpiry.HasValue && banExpiry.Value > DateTime.Now)
+                return $"Account banned until {banExpiry.Value:dd/MM/yyyy}";
+            if (isBanned && (!banExpiry.HasValue || banExpiry.Value <= DateTime.Now))
+                return "Account permanently banned";
+            if (strikes == 2)
+                return "⚠️ FINAL WARNING: 1 more fake complaint = permanent account ban!";
+            if (strikes == 1)
+                return $"⚠️ Warning: {3 - strikes} more fake complaint(s) = account ban";
+
+            return "No strikes. Keep reporting genuine issues!";
         }
 
         private double CalculateAverageResponseTime()

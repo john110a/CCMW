@@ -55,6 +55,7 @@ namespace CCMW.Controllers
                 complaint.ViewCount = 0;
                 complaint.IsDuplicate = false;
                 complaint.IsOverdue = false;
+                complaint.IsFake = false;
                 complaint.ComplaintPhotos = null;
 
                 db.Complaints.Add(complaint);
@@ -100,8 +101,6 @@ namespace CCMW.Controllers
 
         // =====================================================
         // GET ALL COMPLAINTS - FIXED WITH LEFT JOIN
-        // Shows ALL complaints even if Zone/Category/Department
-        // is null (e.g. newly submitted complaints from app)
         // =====================================================
         [HttpGet]
         [Route("")]
@@ -123,28 +122,19 @@ namespace CCMW.Controllers
 
                 System.Diagnostics.Debug.WriteLine($"User: {currentUser?.Email}, Type: {currentUser?.UserType}, IsAdmin: {isSystemAdmin}");
 
-                // =====================================================
-                // LEFT JOIN query - complaints with null Zone/Category/
-                // Department will still appear (unlike .Include() which
-                // uses INNER JOIN and silently drops them)
-                // =====================================================
                 var query = from c in db.Complaints
                             join cat in db.ComplaintCategories
                                 on c.CategoryId equals cat.CategoryId into catGroup
-                            from cat in catGroup.DefaultIfEmpty()        // LEFT JOIN
-
+                            from cat in catGroup.DefaultIfEmpty()
                             join z in db.Zones
                                 on c.ZoneId equals z.ZoneId into zoneGroup
-                            from z in zoneGroup.DefaultIfEmpty()         // LEFT JOIN
-
+                            from z in zoneGroup.DefaultIfEmpty()
                             join dept in db.Departments
                                 on c.DepartmentId equals dept.DepartmentId into deptGroup
-                            from dept in deptGroup.DefaultIfEmpty()      // LEFT JOIN
-
+                            from dept in deptGroup.DefaultIfEmpty()
                             join citizen in db.Users
                                 on c.CitizenId equals citizen.UserId into citizenGroup
-                            from citizen in citizenGroup.DefaultIfEmpty() // LEFT JOIN
-
+                            from citizen in citizenGroup.DefaultIfEmpty()
                             select new
                             {
                                 c.ComplaintId,
@@ -165,6 +155,7 @@ namespace CCMW.Controllers
                                 c.ZoneId,
                                 c.CategoryId,
                                 c.CitizenId,
+                                c.IsFake,
                                 Category = cat == null ? null : new
                                 {
                                     cat.CategoryId,
@@ -188,10 +179,6 @@ namespace CCMW.Controllers
                                 IsAssigned = c.AssignedToId != null
                             };
 
-                // =====================================================
-                // DEPARTMENT FILTER
-                // System Admin sees everything; others see only their dept
-                // =====================================================
                 if (isSystemAdmin)
                 {
                     System.Diagnostics.Debug.WriteLine("System Admin - NO department filter - showing ALL complaints");
@@ -213,9 +200,6 @@ namespace CCMW.Controllers
                     System.Diagnostics.Debug.WriteLine($"Non-admin - Filtering by department: {userDepartmentId}");
                 }
 
-                // =====================================================
-                // STATUS FILTER - only applied when status param provided
-                // =====================================================
                 if (!string.IsNullOrEmpty(status))
                 {
                     if (Enum.TryParse<ComplaintStatus>(status, true, out var complaintStatus))
@@ -224,14 +208,7 @@ namespace CCMW.Controllers
                         System.Diagnostics.Debug.WriteLine($"Filtering by status: {status}");
                     }
                 }
-                else
-                {
-                    System.Diagnostics.Debug.WriteLine("No status filter - returning ALL complaints");
-                }
 
-                // =====================================================
-                // OTHER FILTERS
-                // =====================================================
                 if (zoneId.HasValue)
                     query = query.Where(c => c.ZoneId == zoneId.Value);
 
@@ -278,15 +255,11 @@ namespace CCMW.Controllers
                     Department = c.Department,
                     Citizen = c.Citizen,
                     c.IsAssigned,
-                    // Flag so Flutter can show warning badge
+                    c.IsFake,
                     HasZone = c.ZoneId != null
                 }).ToList();
 
                 System.Diagnostics.Debug.WriteLine($"Returning {result.Count} complaints");
-
-                var statusBreakdown = result.GroupBy(r => r.CurrentStatus)
-                    .Select(g => $"{g.Key}: {g.Count()}");
-                System.Diagnostics.Debug.WriteLine($"Status breakdown: {string.Join(", ", statusBreakdown)}");
 
                 return Ok(new
                 {
@@ -307,9 +280,6 @@ namespace CCMW.Controllers
 
         // =====================================================
         // GET MAP COMPLAINTS
-        // Strict: only complaints with valid zone + coordinates
-        // + approved/assigned/in-progress status
-        // This keeps the map clean and accurate
         // =====================================================
         [HttpGet]
         [Route("map")]
@@ -322,10 +292,6 @@ namespace CCMW.Controllers
         {
             try
             {
-                // Only pull complaints that are ready for the map:
-                // - must have a zone
-                // - must have GPS coordinates
-                // - must be at least Approved (status >= 2), i.e. not just Submitted/Pending
                 var complaints = db.Complaints
                     .Include(c => c.Category)
                     .Include(c => c.Zone)
@@ -334,8 +300,8 @@ namespace CCMW.Controllers
                     .Where(c => c.LocationLatitude != null)
                     .Where(c => c.LocationLongitude != null)
                     .Where(c => c.CurrentStatus >= ComplaintStatus.Approved)
+                    .Where(c => c.IsFake != true)
                     .ToList()
-                    // Haversine distance filter (done in memory after DB fetch)
                     .Where(c => CalculateDistance(
                         lat, lng,
                         (double)c.LocationLatitude,
@@ -421,6 +387,7 @@ namespace CCMW.Controllers
                     DepartmentId = complaint.DepartmentId,
                     ZoneId = complaint.ZoneId,
                     CategoryId = complaint.CategoryId,
+                    complaint.IsFake,
                     Photos = complaint.ComplaintPhotos.Select(p => new
                     {
                         p.PhotoId,
@@ -460,7 +427,8 @@ namespace CCMW.Controllers
                     CurrentStatus = c.CurrentStatus.ToString(),
                     SubmissionStatus = c.SubmissionStatus.ToString(),
                     c.CreatedAt,
-                    c.UpdatedAt
+                    c.UpdatedAt,
+                    c.IsFake
                 }).ToList();
 
                 return Ok(result);
@@ -635,6 +603,238 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
+        // FAKE COMPLAINT MANAGEMENT
+        // =====================================================
+
+        /// Mark complaint as fake and apply strike to citizen
+        [HttpPost]
+        [Route("{complaintId:guid}/mark-fake")]
+        public IHttpActionResult MarkAsFake(Guid complaintId, [FromBody] FakeMarkRequest request)
+        {
+            try
+            {
+                if (request == null || request.AdminId == Guid.Empty)
+                    return BadRequest("Admin ID is required");
+
+                var complaint = db.Complaints.Find(complaintId);
+                if (complaint == null)
+                    return NotFoundMessage("Complaint not found");
+
+                var citizen = db.Users.Find(complaint.CitizenId);
+                if (citizen == null)
+                    return NotFoundMessage("Citizen not found");
+
+                if (complaint.IsFake == true)
+                    return BadRequest("Complaint already marked as fake");
+
+                // Mark complaint as fake
+                complaint.IsFake = true;
+                complaint.FakeVerifiedBy = request.AdminId;
+                complaint.FakeVerifiedAt = DateTime.Now;
+                complaint.CurrentStatus = ComplaintStatus.Rejected;
+                complaint.StatusUpdatedAt = DateTime.Now;
+
+                // Increase strike count
+                int currentStrikes = citizen.FakeStrikes ?? 0;
+                int newStrikes = currentStrikes + 1;
+                citizen.FakeStrikes = newStrikes;
+
+                string actionTaken = "Warning";
+                DateTime? banUntil = null;
+                string message = "";
+
+                // Apply penalty based on strike count
+                if (newStrikes >= 3)
+                {
+                    citizen.IsBanned = true;
+                    citizen.IsActive = false;
+                    actionTaken = "PermanentBan";
+                    message = "Account permanently banned due to 3 fake complaints";
+                }
+                else if (newStrikes == 2)
+                {
+                    citizen.IsBanned = true;
+                    banUntil = DateTime.Now.AddDays(7);
+                    citizen.BanExpiryDate = banUntil;
+                    actionTaken = "TempBan";
+                    message = "Account banned for 7 days. One more fake complaint = permanent ban";
+                }
+                else
+                {
+                    actionTaken = "Warning";
+                    message = $"Warning: Fake complaint detected. {3 - newStrikes} more strike(s) = account ban";
+                }
+
+                // Log fake complaint
+                var log = new FakeComplaintLog
+                {
+                    LogId = Guid.NewGuid(),
+                    ComplaintId = complaintId,
+                    CitizenId = citizen.UserId,
+                    StrikeNumber = newStrikes,
+                    ActionTaken = actionTaken,
+                    BannedUntil = banUntil,
+                    CreatedAt = DateTime.Now
+                };
+                db.FakeComplaintLogs.Add(log);
+
+                // Add status history
+                var history = new ComplaintStatusHistories
+                {
+                    HistoryId = Guid.NewGuid(),
+                    ComplaintId = complaint.ComplaintId,
+                    PreviousStatus = complaint.CurrentStatus.ToString(),
+                    NewStatus = "MarkedAsFake",
+                    ChangedById = request.AdminId,
+                    ChangedAt = DateTime.Now,
+                    Notes = $"Marked as fake by admin. Strike #{newStrikes}. {message}"
+                };
+                db.ComplaintStatusHistories.Add(history);
+
+                db.SaveChanges();
+
+                return Ok(new
+                {
+                    success = true,
+                    strikes = newStrikes,
+                    isBanned = citizen.IsBanned,
+                    banExpiryDate = citizen.BanExpiryDate,
+                    message = message,
+                    actionTaken = actionTaken
+                });
+            }
+            catch (Exception ex)
+            {
+                return InternalServerError(ex);
+            }
+        }
+
+        /// Get citizen's strike info
+        [HttpGet]
+        [Route("citizen/{citizenId:guid}/strikes")]
+        public IHttpActionResult GetCitizenStrikes(Guid citizenId)
+        {
+            try
+            {
+                var citizen = db.Users.FirstOrDefault(u => u.UserId == citizenId);
+                if (citizen == null)
+                    return NotFoundMessage("Citizen not found");
+
+                int strikes = citizen.FakeStrikes ?? 0;
+                bool isBanned = citizen.IsBanned ?? false;
+                DateTime? banExpiry = citizen.BanExpiryDate;
+                string message = "";
+
+                if (isBanned && banExpiry.HasValue && banExpiry.Value > DateTime.Now)
+                {
+                    message = $"Account banned until {banExpiry.Value.ToLocalTime()}";
+                }
+                else if (isBanned && (!banExpiry.HasValue || banExpiry.Value <= DateTime.Now))
+                {
+                    message = "Account permanently banned";
+                }
+                else if (strikes == 1)
+                {
+                    message = $"⚠️ Warning: {3 - strikes} more fake complaint(s) = account ban";
+                }
+                else if (strikes == 2)
+                {
+                    message = $"⚠️ FINAL WARNING: 1 more fake complaint = permanent account ban!";
+                }
+                else
+                {
+                    message = "No strikes. Keep reporting genuine issues!";
+                }
+
+                return Ok(new
+                {
+                    strikes = strikes,
+                    isBanned = isBanned,
+                    banExpiryDate = banExpiry,
+                    message = message
+                });
+            }
+            catch (Exception ex)
+            {
+                return InternalServerError(ex);
+            }
+        }
+
+        /// Get all fake complaints for admin review
+        [HttpGet]
+        [Route("fake-complaints")]
+        public IHttpActionResult GetFakeComplaints([FromUri] int page = 1, [FromUri] int pageSize = 20)
+        {
+            try
+            {
+                var fakeComplaints = db.Complaints
+                    .Where(c => c.IsFake == true)
+                    .OrderByDescending(c => c.FakeVerifiedAt)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .Select(c => new
+                    {
+                        c.ComplaintId,
+                        c.ComplaintNumber,
+                        c.Title,
+                        c.Description,
+                        c.CreatedAt,
+                        c.FakeVerifiedAt,
+                        CitizenName = c.Citizen.FullName,
+                        CitizenEmail = c.Citizen.Email,
+                        Strikes = c.Citizen.FakeStrikes,
+                        IsBanned = c.Citizen.IsBanned,
+                        c.IsFake
+                    })
+                    .ToList();
+
+                int totalCount = db.Complaints.Count(c => c.IsFake == true);
+
+                return Ok(new
+                {
+                    TotalCount = totalCount,
+                    Page = page,
+                    PageSize = pageSize,
+                    FakeComplaints = fakeComplaints
+                });
+            }
+            catch (Exception ex)
+            {
+                return InternalServerError(ex);
+            }
+        }
+
+        /// Get fake complaint log for a citizen
+        [HttpGet]
+        [Route("citizen/{citizenId:guid}/fake-logs")]
+        public IHttpActionResult GetCitizenFakeLogs(Guid citizenId)
+        {
+            try
+            {
+                var logs = db.FakeComplaintLogs
+                    .Where(l => l.CitizenId == citizenId)
+                    .OrderByDescending(l => l.CreatedAt)
+                    .Select(l => new
+                    {
+                        l.LogId,
+                        l.ComplaintId,
+                        ComplaintNumber = l.Complaint.ComplaintNumber,
+                        l.StrikeNumber,
+                        l.ActionTaken,
+                        l.BannedUntil,
+                        l.CreatedAt
+                    })
+                    .ToList();
+
+                return Ok(logs);
+            }
+            catch (Exception ex)
+            {
+                return InternalServerError(ex);
+            }
+        }
+
+        // =====================================================
         // DEBUG ENDPOINTS
         // =====================================================
         [HttpGet]
@@ -650,36 +850,8 @@ namespace CCMW.Controllers
                 result["Complaints_Count"] = db.Complaints.Count();
                 result["Departments_Count"] = db.Departments.Count();
                 result["Zones_Count"] = db.Zones.Count();
-                result["Complaints_WithCategory"] = db.Complaints.Count(c => c.Category != null);
-                result["Complaints_WithZone"] = db.Complaints.Count(c => c.Zone != null);
-                result["Complaints_WithDepartment"] = db.Complaints.Count(c => c.Department != null);
-                result["Complaints_WithNullZone"] = db.Complaints.Count(c => c.ZoneId == null);
-                result["Complaints_Status_Approved"] = db.Complaints.Count(c => c.CurrentStatus == ComplaintStatus.Approved);
-                result["Complaints_Status_Submitted"] = db.Complaints.Count(c => c.CurrentStatus == ComplaintStatus.Submitted);
-                result["Complaints_Status_Resolved"] = db.Complaints.Count(c => c.CurrentStatus == ComplaintStatus.Resolved);
-
-                var firstComplaint = db.Complaints
-                    .Include(c => c.Category)
-                    .Include(c => c.Zone)
-                    .Include(c => c.Department)
-                    .FirstOrDefault();
-
-                if (firstComplaint != null)
-                {
-                    result["Sample_Complaint"] = new
-                    {
-                        firstComplaint.ComplaintId,
-                        firstComplaint.ComplaintNumber,
-                        firstComplaint.Title,
-                        firstComplaint.CurrentStatus,
-                        HasCategory = firstComplaint.Category != null,
-                        CategoryName = firstComplaint.Category?.CategoryName,
-                        HasZone = firstComplaint.Zone != null,
-                        ZoneName = firstComplaint.Zone?.ZoneName,
-                        HasDepartment = firstComplaint.Department != null,
-                        DepartmentName = firstComplaint.Department?.DepartmentName
-                    };
-                }
+                result["Fake_Complaints_Count"] = db.Complaints.Count(c => c.IsFake == true);
+                result["Banned_Users_Count"] = db.Users.Count(u => u.IsBanned == true);
 
                 return Ok(result);
             }
@@ -702,7 +874,6 @@ namespace CCMW.Controllers
                     .Select(g => new
                     {
                         Status = g.Key.ToString(),
-                        StatusName = ((ComplaintStatus)g.Key).ToString(),
                         Count = g.Count(),
                         Complaints = g.Select(c => new
                         {
@@ -710,6 +881,7 @@ namespace CCMW.Controllers
                             c.ComplaintNumber,
                             c.Title,
                             c.CurrentStatus,
+                            c.IsFake,
                             HasZone = c.ZoneId != null
                         }).ToList()
                     })
@@ -718,17 +890,7 @@ namespace CCMW.Controllers
                 return Ok(new
                 {
                     TotalInDatabase = allComplaints.Count,
-                    StatusBreakdown = statusBreakdown,
-                    AllComplaints = allComplaints.Select(c => new
-                    {
-                        c.ComplaintId,
-                        c.ComplaintNumber,
-                        c.Title,
-                        CurrentStatus = (int)c.CurrentStatus,
-                        StatusName = c.CurrentStatus.ToString(),
-                        c.CreatedAt,
-                        HasZone = c.ZoneId != null
-                    }).ToList()
+                    StatusBreakdown = statusBreakdown
                 });
             }
             catch (Exception ex)
@@ -738,8 +900,107 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // BACKGROUND DUPLICATE DETECTION
+        // HELPERS
         // =====================================================
+
+        private void NotifyAdminsOfDuplicates(CCMWDbContext dbContext, Guid complaintId)
+        {
+            try
+            {
+                var admins = dbContext.Users
+                    .Where(u => u.UserType == "System_Admin" || u.UserType == "Department_Admin")
+                    .ToList();
+
+                foreach (var admin in admins)
+                {
+                    dbContext.Notifications.Add(new Notification
+                    {
+                        NotificationId = Guid.NewGuid(),
+                        UserId = admin.UserId,
+                        NotificationType = "Duplicate_Detected",
+                        Title = "Duplicate Complaints Found",
+                        Message = "New complaint matches existing complaints. Review duplicates.",
+                        ReferenceType = "Complaint",
+                        ReferenceId = complaintId,
+                        CreatedAt = DateTime.Now
+                    });
+                }
+
+                dbContext.SaveChanges();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Notification error: {ex.Message}");
+            }
+        }
+
+        private decimal CalculateSimilarityScore(Complaint c1, Complaint c2)
+        {
+            decimal score = 0;
+
+            double distance = CalculateDistance(
+                (double)c1.LocationLatitude, (double)c1.LocationLongitude,
+                (double)c2.LocationLatitude, (double)c2.LocationLongitude);
+
+            if (distance <= 0.1) score += 40;
+            else if (distance <= 0.2) score += 30;
+            else if (distance <= 0.5) score += 20;
+
+            double daysDiff = Math.Abs((c1.CreatedAt - c2.CreatedAt).TotalDays);
+            if (daysDiff <= 1) score += 30;
+            else if (daysDiff <= 3) score += 20;
+            else if (daysDiff <= 7) score += 10;
+
+            score += 20;
+
+            if (!string.IsNullOrEmpty(c1.Title) && !string.IsNullOrEmpty(c2.Title))
+            {
+                var words1 = c1.Title.ToLower().Split(' ');
+                var words2 = c2.Title.ToLower().Split(' ');
+                var common = words1.Intersect(words2).Count();
+                var total = words1.Union(words2).Count();
+                if (total > 0)
+                    score += (decimal)((double)common / total * 10);
+            }
+
+            return Math.Min(score, 100);
+        }
+
+        private double CalculateDistance(double lat1, double lon1, double lat2, double lon2)
+        {
+            var R = 6371;
+            var dLat = ToRadians(lat2 - lat1);
+            var dLon = ToRadians(lon2 - lon1);
+            var a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                    Math.Cos(ToRadians(lat1)) * Math.Cos(ToRadians(lat2)) *
+                    Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+            var c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+            return R * c;
+        }
+
+        private double ToRadians(double angle) => Math.PI * angle / 180.0;
+
+        private Guid GetCurrentUserIdFromRequest()
+        {
+            var systemAdmin = db.Users.FirstOrDefault(u => u.Email == "admin@ccmw.gov.pk");
+            if (systemAdmin != null)
+                return systemAdmin.UserId;
+
+            return Guid.Parse("5b18d046-e0f3-4e90-a36f-d299b563a8e6");
+        }
+
+        private string GetWarningMessage(int strikes)
+        {
+            if (strikes >= 3) return "Your account has been permanently banned for fake complaints.";
+            if (strikes == 2) return "⚠️ FINAL WARNING: Your account is banned for 7 days. One more fake complaint = Permanent Ban.";
+            return "⚠️ Warning: Fake complaint detected. 2 more strikes = Account Ban.";
+        }
+
+        private IHttpActionResult NotFoundMessage(string message)
+        {
+            return Content(HttpStatusCode.NotFound, new { error = message });
+        }
+
         private async Task CheckForDuplicates(Guid newComplaintId)
         {
             await Task.Run(() =>
@@ -754,7 +1015,6 @@ namespace CCMW.Controllers
 
                         if (newComplaint == null) return;
 
-                        // Skip duplicate detection if no coordinates
                         if (newComplaint.LocationLatitude == null || newComplaint.LocationLongitude == null)
                             return;
 
@@ -850,7 +1110,6 @@ namespace CCMW.Controllers
                         }
 
                         dbContext.SaveChanges();
-
                         NotifyAdminsOfDuplicates(dbContext, newComplaint.ComplaintId);
                     }
                 }
@@ -859,107 +1118,6 @@ namespace CCMW.Controllers
                     System.Diagnostics.Debug.WriteLine($"Duplicate detection error: {ex.Message}");
                 }
             });
-        }
-
-        // =====================================================
-        // HELPERS
-        // =====================================================
-        private void NotifyAdminsOfDuplicates(CCMWDbContext dbContext, Guid complaintId)
-        {
-            try
-            {
-                var admins = dbContext.Users
-                    .Where(u => u.UserType == "System_Admin" || u.UserType == "Department_Admin")
-                    .ToList();
-
-                foreach (var admin in admins)
-                {
-                    dbContext.Notifications.Add(new Notification
-                    {
-                        NotificationId = Guid.NewGuid(),
-                        UserId = admin.UserId,
-                        NotificationType = "Duplicate_Detected",
-                        Title = "Duplicate Complaints Found",
-                        Message = "New complaint matches existing complaints. Review duplicates.",
-                        ReferenceType = "Complaint",
-                        ReferenceId = complaintId,
-                        CreatedAt = DateTime.Now
-                    });
-                }
-
-                dbContext.SaveChanges();
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Notification error: {ex.Message}");
-            }
-        }
-
-        private decimal CalculateSimilarityScore(Complaint c1, Complaint c2)
-        {
-            decimal score = 0;
-
-            double distance = CalculateDistance(
-                (double)c1.LocationLatitude, (double)c1.LocationLongitude,
-                (double)c2.LocationLatitude, (double)c2.LocationLongitude);
-
-            if (distance <= 0.1) score += 40;
-            else if (distance <= 0.2) score += 30;
-            else if (distance <= 0.5) score += 20;
-
-            double daysDiff = Math.Abs((c1.CreatedAt - c2.CreatedAt).TotalDays);
-            if (daysDiff <= 1) score += 30;
-            else if (daysDiff <= 3) score += 20;
-            else if (daysDiff <= 7) score += 10;
-
-            score += 20;
-
-            if (!string.IsNullOrEmpty(c1.Title) && !string.IsNullOrEmpty(c2.Title))
-            {
-                var words1 = c1.Title.ToLower().Split(' ');
-                var words2 = c2.Title.ToLower().Split(' ');
-                var common = words1.Intersect(words2).Count();
-                var total = words1.Union(words2).Count();
-                if (total > 0)
-                    score += (decimal)((double)common / total * 10);
-            }
-
-            return Math.Min(score, 100);
-        }
-
-        private double CalculateDistance(double lat1, double lon1, double lat2, double lon2)
-        {
-            var R = 6371;
-            var dLat = ToRadians(lat2 - lat1);
-            var dLon = ToRadians(lon2 - lon1);
-            var a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
-                    Math.Cos(ToRadians(lat1)) * Math.Cos(ToRadians(lat2)) *
-                    Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
-            var c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
-            return R * c;
-        }
-
-        private double ToRadians(double angle) => Math.PI * angle / 180.0;
-
-        private Guid GetCurrentUserIdFromRequest()
-        {
-            var systemAdmin = db.Users.FirstOrDefault(u => u.Email == "admin@ccmw.gov.pk");
-            if (systemAdmin != null)
-                return systemAdmin.UserId;
-
-            return Guid.Parse("5b18d046-e0f3-4e90-a36f-d299b563a8e6");
-        }
-
-        private Guid GetCurrentUserId()
-        {
-            if (System.Web.HttpContext.Current != null && System.Web.HttpContext.Current.User != null)
-            {
-                var identity = System.Web.HttpContext.Current.User.Identity;
-                var user = db.Users.FirstOrDefault(u => u.Email == identity.Name);
-                if (user != null) return user.UserId;
-            }
-
-            return Guid.Parse("5b18d046-e0f3-4e90-a36f-d299b563a8e6");
         }
 
         protected override void Dispose(bool disposing)
@@ -975,5 +1133,15 @@ namespace CCMW.Controllers
                 return NotFound();
             return Content(HttpStatusCode.NotFound, new { error = message });
         }
+    }
+
+    // =====================================================
+    // DTO CLASSES
+    // =====================================================
+
+    public class FakeMarkRequest
+    {
+        public Guid AdminId { get; set; }
+        public string Notes { get; set; }
     }
 }

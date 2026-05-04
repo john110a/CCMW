@@ -51,6 +51,12 @@ public class User
 
     [Column("LastLogin")]
     public DateTime? LastLogin { get; set; }
+    // In Models/User.cs - Add these properties
+    public int? FakeStrikes { get; set; } = 0;
+    public bool? IsBanned { get; set; } = false;
+    public DateTime? BanExpiryDate { get; set; }
+    [Column("LastFakeDate")]
+    public DateTime? LastFakeDate { get; set; }
 
     // Navigation Properties
     public virtual CitizenProfile CitizenProfile { get; set; }

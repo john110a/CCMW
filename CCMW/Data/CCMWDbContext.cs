@@ -36,6 +36,7 @@ public class CCMWDbContext : DbContext
     public DbSet<ContractorZoneAssignment> ContractorZoneAssignments { get; set; }
     public DbSet<ContractorPerformanceHistory> ContractorPerformanceHistories { get; set; }
     public DbSet<SystemSetting> SystemSettings { get; set; }
+    public DbSet<FakeComplaintLog> FakeComplaintLogs { get; set; }
 
     protected override void OnModelCreating(DbModelBuilder modelBuilder)
     {
@@ -67,6 +68,7 @@ public class CCMWDbContext : DbContext
         modelBuilder.Entity<ComplaintFeedback>().ToTable("Complaint_Feedback");
         modelBuilder.Entity<ContractorZoneAssignment>().ToTable("ContractorZoneAssignments");
         modelBuilder.Entity<ContractorPerformanceHistory>().ToTable("ContractorPerformanceHistories");
+        modelBuilder.Entity<FakeComplaintLog>().ToTable("FakeComplaintLog");
 
         // =====================================================
         // COLUMN MAPPINGS
@@ -203,7 +205,6 @@ public class CCMWDbContext : DbContext
             .Property(c => c.Title).HasColumnName("title");
         modelBuilder.Entity<Complaint>()
             .Property(c => c.Description).HasColumnName("description");
-        // ✅ FIXED: Legacy Status string maps to "status" column
         modelBuilder.Entity<Complaint>()
             .Property(c => c.Status).HasColumnName("status");
         modelBuilder.Entity<Complaint>()
@@ -252,13 +253,28 @@ public class CCMWDbContext : DbContext
             .Property(c => c.AssignedAt).HasColumnName("assigned_at");
         modelBuilder.Entity<Complaint>()
             .Property(c => c.SubmissionStatus).HasColumnName("SubmissionStatus");
-        // ✅ FIXED: Only ONE mapping for CurrentStatus - removed duplicate "status" mapping
         modelBuilder.Entity<Complaint>()
             .Property(c => c.CurrentStatus).HasColumnName("CurrentStatus");
         modelBuilder.Entity<Complaint>()
             .Property(c => c.ResolutionNotes).HasColumnName("ResolutionNotes");
         modelBuilder.Entity<Complaint>()
             .Property(c => c.ReopenedAt).HasColumnName("ReopenedAt");
+
+        // Add FakeComplaintLog Entity Mappings
+        modelBuilder.Entity<FakeComplaintLog>()
+            .Property(f => f.LogId).HasColumnName("LogId");
+        modelBuilder.Entity<FakeComplaintLog>()
+            .Property(f => f.ComplaintId).HasColumnName("ComplaintId");
+        modelBuilder.Entity<FakeComplaintLog>()
+            .Property(f => f.CitizenId).HasColumnName("CitizenId");
+        modelBuilder.Entity<FakeComplaintLog>()
+            .Property(f => f.StrikeNumber).HasColumnName("StrikeNumber");
+        modelBuilder.Entity<FakeComplaintLog>()
+            .Property(f => f.ActionTaken).HasColumnName("ActionTaken");
+        modelBuilder.Entity<FakeComplaintLog>()
+            .Property(f => f.BannedUntil).HasColumnName("BannedUntil");
+        modelBuilder.Entity<FakeComplaintLog>()
+            .Property(f => f.CreatedAt).HasColumnName("CreatedAt");
 
         // ComplaintPhoto Entity
         modelBuilder.Entity<ComplaintPhoto>()
@@ -609,6 +625,21 @@ public class CCMWDbContext : DbContext
             .WithMany()
             .HasForeignKey(c => c.MergedIntoComplaintId)
             .WillCascadeOnDelete(false);
+        // In the Complaint Entity property mappings section, add these:
+
+        // In the Complaint Entity property mappings section, add these:
+
+        modelBuilder.Entity<Complaint>()
+            .Property(c => c.IsFake)
+            .HasColumnName("IsFake");
+
+        modelBuilder.Entity<Complaint>()
+            .Property(c => c.FakeVerifiedBy)
+            .HasColumnName("FakeVerifiedBy");
+
+        modelBuilder.Entity<Complaint>()
+            .Property(c => c.FakeVerifiedAt)
+            .HasColumnName("FakeVerifiedAt");
 
         // =====================================================
         // COMPLAINT ASSIGNMENT RELATIONSHIPS
@@ -707,6 +738,22 @@ public class CCMWDbContext : DbContext
             .WillCascadeOnDelete(false);
 
         modelBuilder.Entity<ComplaintFeedback>()
+            .HasRequired(f => f.Citizen)
+            .WithMany()
+            .HasForeignKey(f => f.CitizenId)
+            .WillCascadeOnDelete(false);
+
+        // =====================================================
+        // FAKE COMPLAINT LOG RELATIONSHIPS
+        // =====================================================
+
+        modelBuilder.Entity<FakeComplaintLog>()
+            .HasRequired(f => f.Complaint)
+            .WithMany()
+            .HasForeignKey(f => f.ComplaintId)
+            .WillCascadeOnDelete(false);
+
+        modelBuilder.Entity<FakeComplaintLog>()
             .HasRequired(f => f.Citizen)
             .WithMany()
             .HasForeignKey(f => f.CitizenId)

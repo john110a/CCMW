@@ -119,7 +119,19 @@ namespace CCMW.Models
         public DateTime? ReopenedAt { get; set; }
 
         // ========================
-        // Navigation Properties - FIXED WITH [ForeignKey]
+        // FAKE COMPLAINT TRACKING - ADDED WITH COLUMN MAPPINGS
+        // ========================
+        [Column("IsFake")]
+        public bool? IsFake { get; set; } = false;
+
+        [Column("FakeVerifiedBy")]
+        public Guid? FakeVerifiedBy { get; set; }
+
+        [Column("FakeVerifiedAt")]
+        public DateTime? FakeVerifiedAt { get; set; }
+
+        // ========================
+        // Navigation Properties
         // ========================
 
         [ForeignKey("CitizenId")]
@@ -142,6 +154,9 @@ namespace CCMW.Models
 
         [ForeignKey("MergedIntoComplaintId")]
         public virtual Complaint MergedIntoComplaint { get; set; }
+
+        [ForeignKey("FakeVerifiedBy")]
+        public virtual User FakeVerifiedByUser { get; set; }
 
         // Collections
         public virtual ICollection<ComplaintAssignment> Assignments { get; set; }
