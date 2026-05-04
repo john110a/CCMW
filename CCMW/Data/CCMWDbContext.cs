@@ -591,7 +591,7 @@ public class CCMWDbContext : DbContext
 
         // Complaint - Zone
         modelBuilder.Entity<Complaint>()
-            .HasRequired(c => c.Zone)
+            .HasOptional(c => c.Zone)
             .WithMany(z => z.Complaints)
             .HasForeignKey(c => c.ZoneId)
             .WillCascadeOnDelete(false);

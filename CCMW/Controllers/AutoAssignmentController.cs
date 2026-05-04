@@ -16,7 +16,8 @@ namespace CCMW.Controllers
         [Route("run")]
         public IHttpActionResult RunAutoAssignment()
         {
-            // Get complaints ready for assignment (Approved but not assigned)
+            // Get complaints ready for assignment (
+            // d but not assigned)
             var pendingComplaints = db.Complaints
                 .Where(c => c.CurrentStatus == ComplaintStatus.Approved &&
                            c.AssignedToId == null)
