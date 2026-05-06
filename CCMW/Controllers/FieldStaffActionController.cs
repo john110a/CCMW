@@ -4,6 +4,7 @@ using System.Data.Entity;
 using System.Linq;
 using System.Net;
 using System.Web.Http;
+using System.Data.SqlClient;  // ADD THIS FOR STORED PROCEDURE
 
 namespace CCMW.Controllers
 {
@@ -246,7 +247,7 @@ namespace CCMW.Controllers
                     message = "An error occurred while accepting the assignment",
                     error = ex.Message,
                     innerError = ex.InnerException?.Message,
-                    rootCause = GetRootCause(ex)   // ← now surfaces the real SQL error
+                    rootCause = GetRootCause(ex)
                 });
             }
         }
@@ -360,6 +361,20 @@ namespace CCMW.Controllers
                 catch (Exception histEx)
                 {
                     System.Diagnostics.Debug.WriteLine($"Status history warning: {GetRootCause(histEx)}");
+                }
+
+                // ADD NOTIFICATION: Send notification for COMPLETED event
+                try
+                {
+                    db.Database.ExecuteSqlCommand(
+                        "EXEC sp_NotifyComplaintFlow @ComplaintId, @EventType",
+                        new SqlParameter("@ComplaintId", assignment.ComplaintId),
+                        new SqlParameter("@EventType", "COMPLETED")
+                    );
+                }
+                catch (Exception notifEx)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Notification warning: {GetRootCause(notifEx)}");
                 }
 
                 return Ok(new

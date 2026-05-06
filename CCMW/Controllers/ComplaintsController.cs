@@ -1,6 +1,7 @@
 ﻿using CCMW.Models;
 using System;
 using System.Data.Entity;
+using System.Data.SqlClient;
 using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
@@ -72,6 +73,13 @@ namespace CCMW.Controllers
                 });
 
                 db.SaveChanges();
+
+                // ADDED: Send notification for FILED event
+                db.Database.ExecuteSqlCommand(
+                    "EXEC sp_NotifyComplaintFlow @ComplaintId, @EventType",
+                    new SqlParameter("@ComplaintId", complaint.ComplaintId),
+                    new SqlParameter("@EventType", "FILED")
+                );
 
                 Task.Run(() => CheckForDuplicates(complaint.ComplaintId));
 
@@ -479,6 +487,14 @@ namespace CCMW.Controllers
                 });
 
                 db.SaveChanges();
+
+                // ADDED: Send notification for ASSIGNED event
+                db.Database.ExecuteSqlCommand(
+                    "EXEC sp_NotifyComplaintFlow @ComplaintId, @EventType",
+                    new SqlParameter("@ComplaintId", complaintId),
+                    new SqlParameter("@EventType", "ASSIGNED")
+                );
+
                 return Ok("Complaint assigned successfully");
             }
             catch (Exception ex)
@@ -692,6 +708,13 @@ namespace CCMW.Controllers
                 db.ComplaintStatusHistories.Add(history);
 
                 db.SaveChanges();
+
+                // ADDED: Send notification for FAKE event
+                db.Database.ExecuteSqlCommand(
+                    "EXEC sp_NotifyComplaintFlow @ComplaintId, @EventType",
+                    new SqlParameter("@ComplaintId", complaintId),
+                    new SqlParameter("@EventType", "FAKE")
+                );
 
                 return Ok(new
                 {

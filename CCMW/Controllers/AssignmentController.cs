@@ -2,6 +2,7 @@
 using System;
 using System.Data.Entity;
 using System.Data.Entity.Validation;
+using System.Data.SqlClient;
 using System.Linq;
 using System.Net;
 using System.Web.Http;
@@ -30,7 +31,7 @@ namespace CCMW.Controllers
             try
             {
                 // Validate request
-                if (request == null)
+                if (request == null)    
                     return BadRequest("Assignment data is required.");
 
                 if (request.ComplaintId == Guid.Empty)
@@ -72,6 +73,7 @@ namespace CCMW.Controllers
                     };
                     db.ComplaintStatusHistories.Add(approvalHistory);
                     db.SaveChanges();
+
                 }
 
                 // Now check if complaint is approved (SubmissionStatus == 1)
@@ -142,6 +144,19 @@ namespace CCMW.Controllers
 
                         db.SaveChanges();
                         transaction.Commit();
+                        try
+                        {
+                            db.Database.ExecuteSqlCommand(
+                                "EXEC sp_NotifyComplaintFlow @ComplaintId, @EventType",
+                                new SqlParameter("@ComplaintId", complaint.ComplaintId),
+                                new SqlParameter("@EventType", "ASSIGNED")
+                            );
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"Notification error: {ex.Message}");
+                            // Don't fail the main operation
+                        }
 
                         return Ok(new
                         {

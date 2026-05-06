@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data.Entity;
+using System.Data.SqlClient;
 using System.Linq;
 using System.Net.Http;
 using System.Web.Http;
@@ -160,6 +161,20 @@ namespace CCMW.Controllers
 
                 db.SaveChanges();
 
+                // ADDED: Send notification for VERIFIED event
+                try
+                {
+                    db.Database.ExecuteSqlCommand(
+                        "EXEC sp_NotifyComplaintFlow @ComplaintId, @EventType",
+                        new SqlParameter("@ComplaintId", id),
+                        new SqlParameter("@EventType", "VERIFIED")
+                    );
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Notification error: {ex.Message}");
+                }
+
                 return Ok(new
                 {
                     success = true,
@@ -208,6 +223,20 @@ namespace CCMW.Controllers
                 });
 
                 db.SaveChanges();
+
+                // ADDED: Send notification for REJECTED event
+                try
+                {
+                    db.Database.ExecuteSqlCommand(
+                        "EXEC sp_NotifyComplaintFlow @ComplaintId, @EventType",
+                        new SqlParameter("@ComplaintId", id),
+                        new SqlParameter("@EventType", "REJECTED")
+                    );
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Notification error: {ex.Message}");
+                }
 
                 return Ok(new
                 {
