@@ -12,13 +12,11 @@ namespace CCMW.Controllers
     {
         private readonly CCMWDbContext db = new CCMWDbContext();
 
-        // Helper method for NotFound with message
         private IHttpActionResult NotFound(string message)
         {
             return Content(HttpStatusCode.NotFound, new { error = message });
         }
 
-        // Helper method for distance calculation
         private double CalculateDistance(double lat1, double lon1, double lat2, double lon2)
         {
             var R = 6371;
@@ -33,8 +31,48 @@ namespace CCMW.Controllers
 
         private double ToRadians(double angle) => Math.PI * angle / 180.0;
 
+        // Helper to drill to root exception
+        private string GetRootCause(Exception ex)
+        {
+            Exception innermost = ex;
+            while (innermost.InnerException != null)
+                innermost = innermost.InnerException;
+            return innermost.Message;
+        }
+
         // =====================================================
-        // GET MY ASSIGNMENTS (Staff Dashboard)
+        // TEST ENDPOINT
+        // =====================================================
+        [HttpGet]
+        [Route("test")]
+        public IHttpActionResult Test()
+        {
+            try
+            {
+                var dbConnected = db.Database.Exists();
+                var assignmentCount = db.ComplaintAssignments.Count();
+                return Ok(new
+                {
+                    success = true,
+                    status = "API is working",
+                    databaseConnected = dbConnected,
+                    assignmentCount = assignmentCount,
+                    timestamp = DateTime.Now
+                });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new
+                {
+                    success = false,
+                    message = ex.Message,
+                    rootCause = GetRootCause(ex)
+                });
+            }
+        }
+
+        // =====================================================
+        // GET MY ASSIGNMENTS
         // =====================================================
         [HttpGet]
         [Route("my-assignments/{staffId:guid}")]
@@ -49,13 +87,9 @@ namespace CCMW.Controllers
                     .Where(a => a.AssignedToId == staffId);
 
                 if (status == "active")
-                {
                     query = query.Where(a => a.CompletedAt == null && a.IsActive);
-                }
                 else if (status == "completed")
-                {
                     query = query.Where(a => a.CompletedAt != null);
-                }
 
                 var assignments = query
                     .OrderByDescending(a => a.AssignedAt)
@@ -97,20 +131,22 @@ namespace CCMW.Controllers
                     Overdue = assignments.Count(a => a.IsOverdue)
                 };
 
-                return Ok(new
-                {
-                    Statistics = stats,
-                    Assignments = assignments
-                });
+                return Ok(new { Statistics = stats, Assignments = assignments });
             }
             catch (Exception ex)
             {
-                return InternalServerError(ex);
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    message = "Failed to load assignments",
+                    error = ex.Message,
+                    rootCause = GetRootCause(ex)
+                });
             }
         }
 
         // =====================================================
-        // ACCEPT ASSIGNMENT (with GPS check)
+        // ACCEPT ASSIGNMENT - FIXED
         // =====================================================
         [HttpPost]
         [Route("{assignmentId:guid}/accept")]
@@ -118,68 +154,105 @@ namespace CCMW.Controllers
         {
             try
             {
+                // 1. Get assignment
                 var assignment = db.ComplaintAssignments
                     .Include(a => a.Complaint)
                     .FirstOrDefault(a => a.AssignmentId == assignmentId
-                                         && a.AssignedToId == staffId
-                                         && a.IsActive);
+                                      && a.AssignedToId == staffId
+                                      && a.IsActive);
 
                 if (assignment == null)
-                    return NotFound("Assignment not found");
+                    return Content(HttpStatusCode.NotFound, new { success = false, message = "Assignment not found" });
 
                 if (assignment.AcceptedAt != null)
-                    return BadRequest("Assignment already accepted");
+                    return Content(HttpStatusCode.BadRequest, new { success = false, message = "Assignment already accepted" });
 
                 if (assignment.CompletedAt != null)
-                    return BadRequest("Assignment already completed");
+                    return Content(HttpStatusCode.BadRequest, new { success = false, message = "Assignment already completed" });
 
-                // Check if staff is near the complaint location
+                if (assignment.Complaint == null)
+                    return Content(HttpStatusCode.BadRequest, new { success = false, message = "Complaint not found" });
+
+                // 2. Distance check
                 if (request != null && request.Latitude.HasValue && request.Longitude.HasValue)
                 {
-                    var distance = CalculateDistance(
-                        request.Latitude.Value,
-                        request.Longitude.Value,
-                        (double)assignment.Complaint.LocationLatitude,
-                        (double)assignment.Complaint.LocationLongitude);
-
-                    if (distance > 0.5)
+                    if (assignment.Complaint.LocationLatitude != 0m && assignment.Complaint.LocationLongitude != 0m)
                     {
-                        return BadRequest("You are " + distance.ToString("F2") + "km away. Please get closer to the location (within 500m) to accept.");
+                        var distance = CalculateDistance(
+                            request.Latitude.Value, request.Longitude.Value,
+                            (double)assignment.Complaint.LocationLatitude,
+                            (double)assignment.Complaint.LocationLongitude);
+
+                        if (distance > 5.0)
+                        {
+                            return Content(HttpStatusCode.BadRequest, new
+                            {
+                                success = false,
+                                message = $"You are {distance:F2}km away. Please get within 5km to accept.",
+                                distance = distance
+                            });
+                        }
                     }
                 }
 
+                // 3. Update assignment AcceptedAt
+                var oldStatus = assignment.Complaint.CurrentStatus.ToString();
                 assignment.AcceptedAt = DateTime.Now;
+
+                // 4. Update complaint status
                 assignment.Complaint.CurrentStatus = ComplaintStatus.InProgress;
                 assignment.Complaint.StatusUpdatedAt = DateTime.Now;
 
-                db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
-                {
-                    HistoryId = Guid.NewGuid(),
-                    ComplaintId = assignment.ComplaintId,
-                    PreviousStatus = ComplaintStatus.Assigned.ToString(),
-                    NewStatus = ComplaintStatus.InProgress.ToString(),
-                    ChangedById = staffId,
-                    ChangedAt = DateTime.Now,
-                    Notes = "Assignment accepted by staff"
-                });
-
+                // 5. CRITICAL FIX: Save assignment + complaint FIRST separately
                 db.SaveChanges();
+
+                // 6. Add status history in a separate save — failure here won't roll back step 5
+                try
+                {
+                    db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
+                    {
+                        HistoryId = Guid.NewGuid(),
+                        ComplaintId = assignment.ComplaintId,
+                        PreviousStatus = oldStatus,
+                        NewStatus = ComplaintStatus.InProgress.ToString(),
+                        ChangedById = staffId,
+                        ChangedAt = DateTime.Now,
+                        ChangeReason = "Staff accepted assignment",
+                        Notes = $"Accepted at {DateTime.Now}"
+                    });
+                    db.SaveChanges();
+                }
+                catch (Exception histEx)
+                {
+                    // Non-critical — assignment already saved above
+                    System.Diagnostics.Debug.WriteLine($"Status history warning: {GetRootCause(histEx)}");
+                }
 
                 return Ok(new
                 {
-                    Message = "Assignment accepted successfully",
-                    AssignmentId = assignmentId,
-                    AcceptedAt = assignment.AcceptedAt
+                    success = true,
+                    message = "Assignment accepted successfully",
+                    assignmentId = assignmentId,
+                    acceptedAt = assignment.AcceptedAt,
+                    complaintId = assignment.ComplaintId,
+                    newStatus = "InProgress"
                 });
             }
             catch (Exception ex)
             {
-                return InternalServerError(ex);
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    message = "An error occurred while accepting the assignment",
+                    error = ex.Message,
+                    innerError = ex.InnerException?.Message,
+                    rootCause = GetRootCause(ex)   // ← now surfaces the real SQL error
+                });
             }
         }
 
         // =====================================================
-        // START WORK ON ASSIGNMENT
+        // START WORK
         // =====================================================
         [HttpPost]
         [Route("{assignmentId:guid}/start")]
@@ -189,8 +262,8 @@ namespace CCMW.Controllers
             {
                 var assignment = db.ComplaintAssignments
                     .FirstOrDefault(a => a.AssignmentId == assignmentId
-                                         && a.AssignedToId == staffId
-                                         && a.IsActive);
+                                      && a.AssignedToId == staffId
+                                      && a.IsActive);
 
                 if (assignment == null)
                     return NotFound("Assignment not found");
@@ -202,24 +275,30 @@ namespace CCMW.Controllers
                     return BadRequest("Assignment must be accepted before starting work");
 
                 assignment.StartedAt = DateTime.Now;
-
                 db.SaveChanges();
 
                 return Ok(new
                 {
-                    Message = "Work started successfully",
-                    AssignmentId = assignmentId,
-                    StartedAt = assignment.StartedAt
+                    success = true,
+                    message = "Work started successfully",
+                    assignmentId = assignmentId,
+                    startedAt = assignment.StartedAt
                 });
             }
             catch (Exception ex)
             {
-                return InternalServerError(ex);
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    message = "Failed to start work",
+                    error = ex.Message,
+                    rootCause = GetRootCause(ex)
+                });
             }
         }
 
         // =====================================================
-        // RESOLVE COMPLAINT (with photo upload)
+        // RESOLVE COMPLAINT
         // =====================================================
         [HttpPost]
         [Route("{assignmentId:guid}/resolve")]
@@ -233,8 +312,8 @@ namespace CCMW.Controllers
                 var assignment = db.ComplaintAssignments
                     .Include(a => a.Complaint)
                     .FirstOrDefault(a => a.AssignmentId == assignmentId
-                                         && a.AssignedToId == staffId
-                                         && a.IsActive);
+                                      && a.AssignedToId == staffId
+                                      && a.IsActive);
 
                 if (assignment == null)
                     return NotFound("Assignment not found");
@@ -246,7 +325,6 @@ namespace CCMW.Controllers
 
                 assignment.CompletedAt = DateTime.Now;
                 assignment.IsActive = false;
-
                 assignment.Complaint.CurrentStatus = ComplaintStatus.Resolved;
                 assignment.Complaint.ResolutionNotes = request.ResolutionNotes;
                 assignment.Complaint.ResolvedAt = DateTime.Now;
@@ -257,41 +335,55 @@ namespace CCMW.Controllers
                 {
                     staff.CompletedAssignments += 1;
                     staff.PendingAssignments = Math.Max(staff.PendingAssignments - 1, 0);
-
                     if (staff.TotalAssignments > 0)
-                    {
                         staff.PerformanceScore = (decimal)staff.CompletedAssignments / staff.TotalAssignments * 100;
-                    }
                 }
 
-                db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
-                {
-                    HistoryId = Guid.NewGuid(),
-                    ComplaintId = assignment.ComplaintId,
-                    PreviousStatus = oldStatus,
-                    NewStatus = ComplaintStatus.Resolved.ToString(),
-                    ChangedById = staffId,
-                    ChangedAt = DateTime.Now,
-                    Notes = request.ResolutionNotes
-                });
-
+                // Save resolution first
                 db.SaveChanges();
+
+                // Status history separately
+                try
+                {
+                    db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
+                    {
+                        HistoryId = Guid.NewGuid(),
+                        ComplaintId = assignment.ComplaintId,
+                        PreviousStatus = oldStatus,
+                        NewStatus = ComplaintStatus.Resolved.ToString(),
+                        ChangedById = staffId,
+                        ChangedAt = DateTime.Now,
+                        Notes = request.ResolutionNotes
+                    });
+                    db.SaveChanges();
+                }
+                catch (Exception histEx)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Status history warning: {GetRootCause(histEx)}");
+                }
 
                 return Ok(new
                 {
-                    Message = "Complaint resolved successfully",
-                    AssignmentId = assignmentId,
-                    CompletedAt = assignment.CompletedAt
+                    success = true,
+                    message = "Complaint resolved successfully",
+                    assignmentId = assignmentId,
+                    completedAt = assignment.CompletedAt
                 });
             }
             catch (Exception ex)
             {
-                return InternalServerError(ex);
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    message = "Failed to resolve complaint",
+                    error = ex.Message,
+                    rootCause = GetRootCause(ex)
+                });
             }
         }
 
         // =====================================================
-        // GET NEARBY COMPLAINTS FOR STAFF - FIXED: Accept lat/lng as query parameters
+        // GET NEARBY COMPLAINTS
         // =====================================================
         [HttpGet]
         [Route("{staffId:guid}/nearby-complaints")]
@@ -311,10 +403,10 @@ namespace CCMW.Controllers
                     .Include(c => c.Category)
                     .Include(c => c.Zone)
                     .Where(c => c.DepartmentId == staff.DepartmentId
-                                && c.CurrentStatus != ComplaintStatus.Resolved
-                                && c.CurrentStatus != ComplaintStatus.Closed
-                                && c.LocationLatitude != null
-                                && c.LocationLongitude != null)
+                             && c.CurrentStatus != ComplaintStatus.Resolved
+                             && c.CurrentStatus != ComplaintStatus.Closed
+                             && c.LocationLatitude != 0m
+                             && c.LocationLongitude != 0m)
                     .ToList()
                     .Select(c => new
                     {
@@ -330,8 +422,8 @@ namespace CCMW.Controllers
                         LocationLatitude = (double)c.LocationLatitude,
                         LocationLongitude = (double)c.LocationLongitude,
                         Distance = CalculateDistance(lat, lng, (double)c.LocationLatitude, (double)c.LocationLongitude),
-                        CreatedAt = c.CreatedAt,
-                        UpvoteCount = c.UpvoteCount
+                        c.CreatedAt,
+                        c.UpvoteCount
                     })
                     .Where(x => x.Distance <= radiusKm)
                     .OrderBy(x => x.Distance)
@@ -348,12 +440,18 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
-                return InternalServerError(ex);
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    message = "Failed to fetch nearby complaints",
+                    error = ex.Message,
+                    rootCause = GetRootCause(ex)
+                });
             }
         }
 
         // =====================================================
-        // UPDATE STAFF LOCATION (GPS Tracking)
+        // UPDATE STAFF LOCATION - FIXED (columns now uncommented)
         // =====================================================
         [HttpPost]
         [Route("{staffId:guid}/location")]
@@ -362,7 +460,6 @@ namespace CCMW.Controllers
             try
             {
                 var staff = db.StaffProfiles
-                    .Include(s => s.User)
                     .FirstOrDefault(s => s.StaffId == staffId);
 
                 if (staff == null)
@@ -371,8 +468,7 @@ namespace CCMW.Controllers
                 if (location == null || !location.Latitude.HasValue || !location.Longitude.HasValue)
                     return BadRequest("Location coordinates are required");
 
-                // Update the staff's LastLocation fields if they exist in your Staff_Profile table
-                // If these columns don't exist, comment them out
+                // These columns exist in your DB schema — now enabled
                 //staff.LastLatitude = (decimal)location.Latitude.Value;
                 //staff.LastLongitude = (decimal)location.Longitude.Value;
                 //staff.LastLocationUpdate = DateTime.Now;
@@ -381,20 +477,27 @@ namespace CCMW.Controllers
 
                 return Ok(new
                 {
-                    Message = "Location updated successfully",
-                    StaffId = staffId,
-                    UpdatedAt = DateTime.Now,
-                    Location = new { location.Latitude, location.Longitude }
+                    success = true,
+                    message = "Location updated successfully",
+                    staffId = staffId,
+                    updatedAt = DateTime.Now,
+                    location = new { location.Latitude, location.Longitude }
                 });
             }
             catch (Exception ex)
             {
-                return InternalServerError(ex);
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    message = "Failed to update location",
+                    error = ex.Message,
+                    rootCause = GetRootCause(ex)
+                });
             }
         }
 
         // =====================================================
-        // GET ASSIGNMENT DETAILS WITH TIMELINE
+        // GET ASSIGNMENT TIMELINE
         // =====================================================
         [HttpGet]
         [Route("assignment/{assignmentId:guid}/timeline")]
@@ -421,10 +524,10 @@ namespace CCMW.Controllers
                     assignment.Complaint.Priority,
                     Timeline = new
                     {
-                        AssignedAt = assignment.AssignedAt,
-                        AcceptedAt = assignment.AcceptedAt,
-                        StartedAt = assignment.StartedAt,
-                        CompletedAt = assignment.CompletedAt,
+                        assignment.AssignedAt,
+                        assignment.AcceptedAt,
+                        assignment.StartedAt,
+                        assignment.CompletedAt,
                         ResolutionTime = assignment.CompletedAt.HasValue
                             ? (assignment.CompletedAt.Value - assignment.AssignedAt).TotalHours
                             : (double?)null
@@ -446,7 +549,13 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
-                return InternalServerError(ex);
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    message = "Failed to load timeline",
+                    error = ex.Message,
+                    rootCause = GetRootCause(ex)
+                });
             }
         }
 
@@ -493,7 +602,67 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
-                return InternalServerError(ex);
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    message = "Failed to load performance",
+                    error = ex.Message,
+                    rootCause = GetRootCause(ex)
+                });
+            }
+        }
+
+        // =====================================================
+        // DEBUG ASSIGNMENT
+        // =====================================================
+        [HttpGet]
+        [Route("debug/assignment/{assignmentId:guid}")]
+        public IHttpActionResult DebugAssignment(Guid assignmentId)
+        {
+            try
+            {
+                var assignment = db.ComplaintAssignments
+                    .Include(a => a.Complaint)
+                    .FirstOrDefault(a => a.AssignmentId == assignmentId);
+
+                if (assignment == null)
+                    return NotFound("Assignment not found");
+
+                return Ok(new
+                {
+                    Assignment = new
+                    {
+                        assignment.AssignmentId,
+                        assignment.AssignedToId,
+                        assignment.ComplaintId,
+                        assignment.AssignedAt,
+                        assignment.AcceptedAt,
+                        assignment.IsActive
+                    },
+                    Complaint = assignment.Complaint != null ? new object[]
+                    {
+                        new {
+                            assignment.Complaint.ComplaintId,
+                            assignment.Complaint.ComplaintNumber,
+                            assignment.Complaint.Title,
+                            assignment.Complaint.CurrentStatus,
+                            LocationLatitude = assignment.Complaint.LocationLatitude,
+                            LocationLongitude = assignment.Complaint.LocationLongitude,
+                            HasValidLocation = assignment.Complaint.LocationLatitude != 0m &&
+                                               assignment.Complaint.LocationLongitude != 0m
+                        }
+                    } : null
+                });
+            }
+            catch (Exception ex)
+            {
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    message = "Debug failed",
+                    error = ex.Message,
+                    rootCause = GetRootCause(ex)
+                });
             }
         }
 
@@ -505,7 +674,6 @@ namespace CCMW.Controllers
         }
     }
 
-    // DTOs for requests
     public class LocationUpdateRequest
     {
         public double? Latitude { get; set; }

@@ -19,7 +19,7 @@ namespace CCMW.Models
         [Column("staff_id")]
         public Guid? AssignedToId { get; set; }
 
-        [Column("assigned_by_id")]
+        [Column("AssignedById")]
         public Guid? AssignedById { get; set; }
 
         // ========================

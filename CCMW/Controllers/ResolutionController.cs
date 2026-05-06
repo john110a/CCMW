@@ -1,9 +1,9 @@
-﻿// Controllers/ResolutionController.cs
-using CCMW.Models;
+﻿using CCMW.Models;
 using System;
 using System.Collections.Generic;
 using System.Data.Entity;
 using System.Linq;
+using System.Net.Http;
 using System.Web.Http;
 
 namespace CCMW.Controllers
@@ -13,6 +13,26 @@ namespace CCMW.Controllers
     {
         private CCMWDbContext db = new CCMWDbContext();
 
+        // Helper method to get full URL - FIXED to include virtual directory
+        private string GetFullUrl(string relativePath)
+        {
+            if (string.IsNullOrEmpty(relativePath))
+                return null;
+
+            var requestUrl = Request.RequestUri;
+            var baseUrl = $"{requestUrl.Scheme}://{requestUrl.Authority}";
+
+            // Get the application path (e.g., /CCMW)
+            var appPath = Request.GetRequestContext().VirtualPathRoot;
+            if (appPath == "/")
+                appPath = "";
+
+            var cleanPath = relativePath.StartsWith("/") ? relativePath.Substring(1) : relativePath;
+
+            // Combine: baseUrl + appPath + cleanPath
+            return $"{baseUrl}{appPath}/{cleanPath}";
+        }
+
         // GET api/resolutions/pending
         [HttpGet]
         [Route("pending")]
@@ -20,13 +40,12 @@ namespace CCMW.Controllers
         {
             try
             {
-                // Get complaints that are resolved and need verification
                 var resolutions = db.Complaints
                     .Include(c => c.Category)
                     .Include(c => c.AssignedTo.User)
                     .Where(c => c.CurrentStatus == ComplaintStatus.Resolved)
                     .OrderByDescending(c => c.ResolvedAt)
-                    .Take(20)
+                    .Take(50)
                     .ToList()
                     .Select(c => new
                     {
@@ -38,15 +57,15 @@ namespace CCMW.Controllers
                         Category = c.Category != null ? c.Category.CategoryName : "General",
                         ResolvedBy = c.AssignedTo != null && c.AssignedTo.User != null
                             ? c.AssignedTo.User.FullName
-                            : "Unknown",
+                            : (c.AssignedTo != null ? c.AssignedTo.EmployeeId : "Unknown"),
                         SubmittedAt = c.ResolvedAt != null
                             ? ((DateTime)c.ResolvedAt).ToString("MMM dd, yyyy - h:mm tt")
                             : "",
                         Status = "Pending",
-                        BeforePhotoUrl = GetBeforePhoto(c.ComplaintId),
-                        AfterPhotoUrl = GetAfterPhoto(c.ComplaintId),
-                        ResolutionNotes = c.ResolutionNotes ?? "Resolution completed",
-                        FlagReason = (string)null // FIXED: Simple null cast for C# 7.3
+                        BeforePhotoUrl = GetFullUrl(GetBeforePhoto(c.ComplaintId)),
+                        AfterPhotoUrl = GetFullUrl(GetAfterPhoto(c.ComplaintId)),
+                        ResolutionNotes = c.ResolutionNotes ?? "Resolution completed. Please verify the after photo.",
+                        FlagReason = (string)null
                     })
                     .ToList();
 
@@ -129,14 +148,13 @@ namespace CCMW.Controllers
                 complaint.CurrentStatus = ComplaintStatus.Verified;
                 complaint.StatusUpdatedAt = DateTime.Now;
 
-                // Add to status history
                 db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
                 {
                     HistoryId = Guid.NewGuid(),
                     ComplaintId = id,
                     PreviousStatus = oldStatus.ToString(),
                     NewStatus = ComplaintStatus.Verified.ToString(),
-                    Notes = request != null ? request.Notes : "Resolution verified by admin",
+                    Notes = request?.Notes ?? "Resolution verified by admin",
                     ChangedAt = DateTime.Now
                 });
 
@@ -144,13 +162,18 @@ namespace CCMW.Controllers
 
                 return Ok(new
                 {
+                    success = true,
                     Message = "Resolution verified successfully",
                     ComplaintId = id
                 });
             }
             catch (Exception ex)
             {
-                return InternalServerError(ex);
+                return Content(System.Net.HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    Message = ex.Message
+                });
             }
         }
 
@@ -170,11 +193,9 @@ namespace CCMW.Controllers
 
                 var oldStatus = complaint.CurrentStatus;
 
-                // Send back to InProgress for rework
                 complaint.CurrentStatus = ComplaintStatus.InProgress;
                 complaint.StatusUpdatedAt = DateTime.Now;
 
-                // Add to status history
                 db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
                 {
                     HistoryId = Guid.NewGuid(),
@@ -190,13 +211,18 @@ namespace CCMW.Controllers
 
                 return Ok(new
                 {
+                    success = true,
                     Message = "Resolution flagged for rework",
                     ComplaintId = id
                 });
             }
             catch (Exception ex)
             {
-                return InternalServerError(ex);
+                return Content(System.Net.HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    Message = ex.Message
+                });
             }
         }
 
@@ -226,23 +252,58 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
-                return InternalServerError(ex);
+                return Ok(new
+                {
+                    PendingResolutions = 0,
+                    VerifiedResolutions = 0,
+                    TotalResolutions = 0,
+                    ThisMonth = 0,
+                    Error = ex.Message
+                });
             }
         }
 
-        // Helper methods
         private string GetBeforePhoto(Guid complaintId)
         {
+            string[] photoTypes = { "Complaint", "Before", "Initial", "Original" };
             var photo = db.ComplaintPhotos
-                .FirstOrDefault(p => p.ComplaintId == complaintId && p.PhotoType == "Before");
-            return photo != null ? photo.PhotoUrl : null;
+                .FirstOrDefault(p => p.ComplaintId == complaintId && photoTypes.Contains(p.PhotoType));
+
+            if (photo == null)
+            {
+                photo = db.ComplaintPhotos
+                    .FirstOrDefault(p => p.ComplaintId == complaintId && p.UploadOrder == 1);
+            }
+
+            if (photo == null)
+            {
+                photo = db.ComplaintPhotos
+                    .FirstOrDefault(p => p.ComplaintId == complaintId);
+            }
+
+            return photo?.PhotoUrl;
         }
 
         private string GetAfterPhoto(Guid complaintId)
         {
+            string[] photoTypes = { "Resolution", "After", "Completed", "Resolved" };
             var photo = db.ComplaintPhotos
-                .FirstOrDefault(p => p.ComplaintId == complaintId && p.PhotoType == "After");
-            return photo != null ? photo.PhotoUrl : null;
+                .FirstOrDefault(p => p.ComplaintId == complaintId && photoTypes.Contains(p.PhotoType));
+
+            if (photo == null)
+            {
+                var maxOrder = db.ComplaintPhotos
+                    .Where(p => p.ComplaintId == complaintId)
+                    .Max(p => (int?)p.UploadOrder);
+
+                if (maxOrder.HasValue)
+                {
+                    photo = db.ComplaintPhotos
+                        .FirstOrDefault(p => p.ComplaintId == complaintId && p.UploadOrder == maxOrder.Value);
+                }
+            }
+
+            return photo?.PhotoUrl;
         }
 
         protected override void Dispose(bool disposing)
@@ -253,7 +314,6 @@ namespace CCMW.Controllers
         }
     }
 
-    // Request DTOs
     public class VerifyRequest
     {
         public string Notes { get; set; }

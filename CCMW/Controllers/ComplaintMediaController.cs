@@ -15,8 +15,27 @@ namespace CCMW.Controllers
     {
         private readonly CCMWDbContext db = new CCMWDbContext();
 
-        private readonly string UploadRoot =
+        private string UploadRoot =>
             HttpContext.Current.Server.MapPath("~/Uploads/Complaints/");
+
+        private string EnsureUploadDirectoryExists()
+        {
+            try
+            {
+                var path = UploadRoot;
+                if (!Directory.Exists(path))
+                {
+                    Directory.CreateDirectory(path);
+                    System.Diagnostics.Debug.WriteLine($"Created upload directory: {path}");
+                }
+                return path;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error creating upload directory: {ex.Message}");
+                throw;
+            }
+        }
 
         // =====================================================
         // 1️⃣ UPLOAD COMPLAINT PHOTO (Citizen / Admin)
@@ -29,31 +48,24 @@ namespace CCMW.Controllers
         {
             try
             {
-                // Validate input
                 if (!Request.Content.IsMimeMultipartContent())
                     return BadRequest("Multipart data required");
 
-                // Check if complaint exists
                 var complaint = db.Complaints.FirstOrDefault(c => c.ComplaintId == complaintId);
                 if (complaint == null)
                     return Content(HttpStatusCode.NotFound, new { error = "Complaint not found" });
 
-                // Check if user exists
                 var user = db.Users.FirstOrDefault(u => u.UserId == uploadedById);
                 if (user == null)
                     return Content(HttpStatusCode.NotFound, new { error = "User not found" });
 
-                // Create upload directory if it doesn't exist
-                Directory.CreateDirectory(UploadRoot);
-
-                var provider = new MultipartFormDataStreamProvider(UploadRoot);
+                var uploadPath = EnsureUploadDirectoryExists();
+                var provider = new MultipartFormDataStreamProvider(uploadPath);
                 await Request.Content.ReadAsMultipartAsync(provider);
 
-                // Check if any files were uploaded
                 if (provider.FileData.Count == 0)
                     return BadRequest("No files uploaded");
 
-                // Check total photos limit per complaint (max 5)
                 var currentPhotoCount = db.ComplaintPhotos.Count(p => p.ComplaintId == complaintId);
                 if (currentPhotoCount + provider.FileData.Count > 5)
                     return BadRequest("Maximum 5 photos allowed per complaint");
@@ -65,51 +77,38 @@ namespace CCMW.Controllers
                 {
                     try
                     {
-                        // Get original filename
                         var originalFileName = file.Headers.ContentDisposition.FileName.Trim('"');
-
-                        // Validate file extension
                         var extension = Path.GetExtension(originalFileName).ToLower();
                         var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".gif", ".bmp" };
+
                         if (!allowedExtensions.Contains(extension))
                         {
-                            File.Delete(file.LocalFileName);
-                            continue; // Skip invalid file
+                            if (File.Exists(file.LocalFileName)) File.Delete(file.LocalFileName);
+                            continue;
                         }
 
-                        // Validate file size (max 5MB)
                         var fileInfo = new FileInfo(file.LocalFileName);
-                        if (fileInfo.Length > 5 * 1024 * 1024) // 5MB in bytes
+                        if (fileInfo.Length > 5 * 1024 * 1024)
                         {
-                            File.Delete(file.LocalFileName);
-                            continue; // Skip oversized file
+                            if (File.Exists(file.LocalFileName)) File.Delete(file.LocalFileName);
+                            continue;
                         }
 
-                        // Generate unique filename
                         var fileName = Guid.NewGuid() + extension;
-                        var finalPath = Path.Combine(UploadRoot, fileName);
-
-                        // Move file to final location
+                        var finalPath = Path.Combine(uploadPath, fileName);
                         File.Move(file.LocalFileName, finalPath);
 
-                        // Get GPS coordinates if available (optional)
-                        decimal? gpsLat = null;
-                        decimal? gpsLng = null;
-
-                        // You can add logic here to extract GPS from image metadata if needed
-
-                        // Create photo record in database
                         var photo = new ComplaintPhoto
                         {
                             PhotoId = Guid.NewGuid(),
                             ComplaintId = complaintId,
-                            UploadedById = uploadedById,
+                            UploadedById = uploadedById, // Already a UserId for citizen uploads
                             PhotoUrl = "/Uploads/Complaints/" + fileName,
-                            PhotoThumbnailUrl = "/Uploads/Complaints/" + fileName, // You can generate thumbnail later
+                            PhotoThumbnailUrl = "/Uploads/Complaints/" + fileName,
                             PhotoType = "Complaint",
                             UploadedAt = DateTime.Now,
-                            GpsLatitude = gpsLat ?? 0,
-                            GpsLongitude = gpsLng ?? 0,
+                            GpsLatitude = null,
+                            GpsLongitude = null,
                             UploadOrder = currentPhotoCount + successfulUploads + 1
                         };
 
@@ -126,25 +125,17 @@ namespace CCMW.Controllers
                     }
                     catch (Exception ex)
                     {
-                        // Log error but continue with other files
                         System.Diagnostics.Debug.WriteLine($"Error processing file: {ex.Message}");
-                        // Clean up temp file if it exists
                         if (File.Exists(file.LocalFileName))
-                            File.Delete(file.LocalFileName);
+                            try { File.Delete(file.LocalFileName); } catch { }
                     }
                 }
 
-                // Save all successful uploads to database
                 if (successfulUploads > 0)
-                {
                     db.SaveChanges();
-                }
 
-                // Return response
                 if (successfulUploads == 0)
-                {
                     return BadRequest("No valid files were uploaded. Please check file types and sizes.");
-                }
 
                 return Ok(new
                 {
@@ -155,7 +146,14 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
-                return InternalServerError(ex);
+                System.Diagnostics.Debug.WriteLine($"UploadComplaintPhoto ERROR: {ex.Message}");
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    Message = "An error occurred while uploading.",
+                    Error = ex.Message,
+                    Inner = ex.InnerException?.Message,
+                    Inner2 = ex.InnerException?.InnerException?.Message
+                });
             }
         }
 
@@ -170,39 +168,77 @@ namespace CCMW.Controllers
         {
             try
             {
-                // Validate assignment exists and belongs to staff
+                System.Diagnostics.Debug.WriteLine($"=== UploadResolutionPhoto START ===");
+                System.Diagnostics.Debug.WriteLine($"AssignmentId: {assignmentId}, StaffId: {staffId}");
+
+                // AssignedToId in ComplaintAssignment stores StaffProfile.StaffId (not UserId)
                 var assignment = db.ComplaintAssignments
-                    .FirstOrDefault(a =>
-                        a.AssignmentId == assignmentId &&
-                        a.AssignedToId == staffId);
+                    .FirstOrDefault(a => a.AssignmentId == assignmentId && a.AssignedToId == staffId);
 
                 if (assignment == null)
-                    return Content(HttpStatusCode.NotFound, new { error = "Assignment not found or does not belong to this staff member" });
+                {
+                    System.Diagnostics.Debug.WriteLine("ERROR: Assignment not found");
+                    return Content(HttpStatusCode.NotFound, new
+                    {
+                        success = false,
+                        error = "Assignment not found or does not belong to this staff member"
+                    });
+                }
 
-                // Check if staff exists
-                var staff = db.StaffProfiles.FirstOrDefault(s => s.StaffId == staffId);
-                if (staff == null)
-                    return Content(HttpStatusCode.NotFound, new { error = "Staff not found" });
+                System.Diagnostics.Debug.WriteLine($"Assignment found - ComplaintId: {assignment.ComplaintId}");
+
+                // -------------------------------------------------------
+                // ROOT CAUSE FIX:
+                // staffId = StaffProfile.StaffId (from ComplaintAssignment.staff_id column)
+                // ComplaintPhoto.UploadedById = FK → Users.user_id
+                // These are DIFFERENT GUIDs. We must resolve the UserId via StaffProfile.
+                // -------------------------------------------------------
+                var staffProfile = db.StaffProfiles.FirstOrDefault(s => s.StaffId == staffId);
+                if (staffProfile == null)
+                {
+                    System.Diagnostics.Debug.WriteLine("ERROR: StaffProfile not found");
+                    return Content(HttpStatusCode.NotFound, new
+                    {
+                        success = false,
+                        error = "Staff profile not found"
+                    });
+                }
+
+                Guid uploaderUserId = staffProfile.UserId;
+                System.Diagnostics.Debug.WriteLine($"Resolved UserId for photo FK: {uploaderUserId}");
 
                 if (!Request.Content.IsMimeMultipartContent())
+                {
+                    System.Diagnostics.Debug.WriteLine("ERROR: Not multipart content");
                     return BadRequest("Multipart data required");
+                }
 
-                Directory.CreateDirectory(UploadRoot);
+                var uploadPath = EnsureUploadDirectoryExists();
+                var provider = new MultipartFormDataStreamProvider(uploadPath);
 
-                var provider = new MultipartFormDataStreamProvider(UploadRoot);
-                await Request.Content.ReadAsMultipartAsync(provider);
+                try
+                {
+                    await Request.Content.ReadAsMultipartAsync(provider);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"ERROR reading multipart: {ex.Message}");
+                    return BadRequest($"Error reading upload: {ex.Message}");
+                }
 
-                // Check if any files were uploaded
                 if (provider.FileData.Count == 0)
+                {
+                    System.Diagnostics.Debug.WriteLine("ERROR: No files uploaded");
                     return BadRequest("No files uploaded");
+                }
 
-                // Check total photos limit per complaint (max 5)
+                System.Diagnostics.Debug.WriteLine($"Files received: {provider.FileData.Count}");
+
                 var currentPhotoCount = db.ComplaintPhotos.Count(p =>
-                    p.ComplaintId == assignment.ComplaintId &&
-                    p.PhotoType == "Resolution");
+                    p.ComplaintId == assignment.ComplaintId && p.PhotoType == "Resolution");
 
-                if (currentPhotoCount + provider.FileData.Count > 5)
-                    return BadRequest("Maximum 5 resolution photos allowed per complaint");
+                if (currentPhotoCount + provider.FileData.Count > 10)
+                    return BadRequest("Maximum 10 resolution photos allowed per complaint");
 
                 int successfulUploads = 0;
                 var uploadedPhotos = new System.Collections.Generic.List<object>();
@@ -211,43 +247,54 @@ namespace CCMW.Controllers
                 {
                     try
                     {
-                        // Get original filename
                         var originalFileName = file.Headers.ContentDisposition.FileName.Trim('"');
+                        System.Diagnostics.Debug.WriteLine($"Processing file: {originalFileName}");
 
-                        // Validate file extension
                         var extension = Path.GetExtension(originalFileName).ToLower();
-                        var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".gif", ".bmp" };
+                        var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp" };
+
                         if (!allowedExtensions.Contains(extension))
                         {
-                            File.Delete(file.LocalFileName);
+                            System.Diagnostics.Debug.WriteLine($"Invalid extension: {extension}");
+                            if (File.Exists(file.LocalFileName)) File.Delete(file.LocalFileName);
                             continue;
                         }
 
-                        // Validate file size (max 5MB)
                         var fileInfo = new FileInfo(file.LocalFileName);
                         if (fileInfo.Length > 5 * 1024 * 1024)
                         {
-                            File.Delete(file.LocalFileName);
+                            System.Diagnostics.Debug.WriteLine($"File too large: {fileInfo.Length} bytes");
+                            if (File.Exists(file.LocalFileName)) File.Delete(file.LocalFileName);
                             continue;
                         }
 
-                        // Generate unique filename
-                        var fileName = Guid.NewGuid() + extension;
-                        var finalPath = Path.Combine(UploadRoot, fileName);
+                        System.Diagnostics.Debug.WriteLine($"File size: {fileInfo.Length} bytes");
+
+                        var fileName = $"{Guid.NewGuid()}{extension}";
+                        var finalPath = Path.Combine(uploadPath, fileName);
+
+                        if (!File.Exists(file.LocalFileName))
+                        {
+                            System.Diagnostics.Debug.WriteLine($"Temp file not found: {file.LocalFileName}");
+                            continue;
+                        }
 
                         File.Move(file.LocalFileName, finalPath);
+                        System.Diagnostics.Debug.WriteLine($"File saved to: {finalPath}");
 
-                        // Create photo record
                         var photo = new ComplaintPhoto
                         {
                             PhotoId = Guid.NewGuid(),
                             ComplaintId = assignment.ComplaintId,
-                            UploadedById = staffId,
+                            UploadedById = uploaderUserId, // FIXED: UserId from StaffProfile, satisfies FK_Photos_UploadedBy
                             PhotoUrl = "/Uploads/Complaints/" + fileName,
                             PhotoThumbnailUrl = "/Uploads/Complaints/" + fileName,
                             PhotoType = "Resolution",
                             UploadedAt = DateTime.Now,
-                            UploadOrder = currentPhotoCount + successfulUploads + 1
+                            UploadOrder = currentPhotoCount + successfulUploads + 1,
+                            Caption = $"Resolution photo for assignment {assignmentId}",
+                            GpsLatitude = null,
+                            GpsLongitude = null
                         };
 
                         db.ComplaintPhotos.Add(photo);
@@ -260,27 +307,30 @@ namespace CCMW.Controllers
                             photo.UploadOrder,
                             FileName = originalFileName
                         });
+
+                        System.Diagnostics.Debug.WriteLine($"Photo record created: {photo.PhotoId}");
                     }
                     catch (Exception ex)
                     {
                         System.Diagnostics.Debug.WriteLine($"Error processing file: {ex.Message}");
+                        System.Diagnostics.Debug.WriteLine($"Inner: {ex.InnerException?.Message}");
                         if (File.Exists(file.LocalFileName))
-                            File.Delete(file.LocalFileName);
+                            try { File.Delete(file.LocalFileName); } catch { }
                     }
                 }
 
                 if (successfulUploads > 0)
                 {
-                    db.SaveChanges();
+                    await db.SaveChangesAsync();
+                    System.Diagnostics.Debug.WriteLine($"Saved {successfulUploads} photos to database");
                 }
 
                 if (successfulUploads == 0)
-                {
-                    return BadRequest("No valid files were uploaded. Please check file types and sizes.");
-                }
+                    return BadRequest("No valid files were uploaded. Please check file types (JPG, PNG, GIF) and size (max 5MB).");
 
                 return Ok(new
                 {
+                    success = true,
                     Message = $"{successfulUploads} resolution photo(s) uploaded successfully",
                     TotalUploaded = successfulUploads,
                     Photos = uploadedPhotos
@@ -288,7 +338,17 @@ namespace CCMW.Controllers
             }
             catch (Exception ex)
             {
-                return InternalServerError(ex);
+                System.Diagnostics.Debug.WriteLine($"UNHANDLED EXCEPTION: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Stack Trace: {ex.StackTrace}");
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    Message = "An error occurred while uploading resolution photo.",
+                    Error = ex.Message,
+                    Inner = ex.InnerException?.Message,
+                    Inner2 = ex.InnerException?.InnerException?.Message,
+                    Stack = ex.StackTrace
+                });
             }
         }
 
@@ -301,7 +361,6 @@ namespace CCMW.Controllers
         {
             try
             {
-                // Check if complaint exists
                 var complaint = db.Complaints.FirstOrDefault(c => c.ComplaintId == complaintId);
                 if (complaint == null)
                     return Content(HttpStatusCode.NotFound, new { error = "Complaint not found" });
@@ -340,7 +399,7 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // 4️⃣ GET PHOTOS BY TYPE (Before/After/Complaint/Resolution)
+        // 4️⃣ GET PHOTOS BY TYPE
         // =====================================================
         [HttpGet]
         [Route("complaint/{complaintId:guid}/type/{photoType}")]
@@ -387,12 +446,10 @@ namespace CCMW.Controllers
                 if (photo == null)
                     return Content(HttpStatusCode.NotFound, new { error = "Photo not found" });
 
-                // Delete physical file
                 var fullPath = HttpContext.Current.Server.MapPath(photo.PhotoUrl);
                 if (File.Exists(fullPath))
                     File.Delete(fullPath);
 
-                // Also delete thumbnail if it exists and is different
                 if (!string.IsNullOrEmpty(photo.PhotoThumbnailUrl) && photo.PhotoThumbnailUrl != photo.PhotoUrl)
                 {
                     var thumbPath = HttpContext.Current.Server.MapPath(photo.PhotoThumbnailUrl);
@@ -403,11 +460,7 @@ namespace CCMW.Controllers
                 db.ComplaintPhotos.Remove(photo);
                 db.SaveChanges();
 
-                return Ok(new
-                {
-                    Message = "Photo deleted successfully",
-                    PhotoId = photoId
-                });
+                return Ok(new { Message = "Photo deleted successfully", PhotoId = photoId });
             }
             catch (Exception ex)
             {
@@ -431,12 +484,7 @@ namespace CCMW.Controllers
                 photo.Caption = caption;
                 db.SaveChanges();
 
-                return Ok(new
-                {
-                    Message = "Caption updated successfully",
-                    PhotoId = photoId,
-                    Caption = caption
-                });
+                return Ok(new { Message = "Caption updated successfully", PhotoId = photoId, Caption = caption });
             }
             catch (Exception ex)
             {
@@ -456,11 +504,7 @@ namespace CCMW.Controllers
                 var counts = db.ComplaintPhotos
                     .Where(p => p.ComplaintId == complaintId)
                     .GroupBy(p => p.PhotoType)
-                    .Select(g => new
-                    {
-                        PhotoType = g.Key,
-                        Count = g.Count()
-                    })
+                    .Select(g => new { PhotoType = g.Key, Count = g.Count() })
                     .ToList();
 
                 return Ok(new
