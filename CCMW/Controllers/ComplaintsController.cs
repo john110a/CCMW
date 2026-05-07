@@ -131,6 +131,7 @@ namespace CCMW.Controllers
                 System.Diagnostics.Debug.WriteLine($"User: {currentUser?.Email}, Type: {currentUser?.UserType}, IsAdmin: {isSystemAdmin}");
 
                 var query = from c in db.Complaints
+                            
                             join cat in db.ComplaintCategories
                                 on c.CategoryId equals cat.CategoryId into catGroup
                             from cat in catGroup.DefaultIfEmpty()

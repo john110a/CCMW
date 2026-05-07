@@ -78,7 +78,7 @@ namespace CCMW.Controllers
             }
         }
 
-        // GET api/resolutions/all
+        // GET api/resolutions/all - FIXED to include photos
         [HttpGet]
         [Route("all")]
         public IHttpActionResult GetAllResolutions(
@@ -89,6 +89,8 @@ namespace CCMW.Controllers
             try
             {
                 var query = db.Complaints
+                    .Include(c => c.Category)
+                    .Include(c => c.AssignedTo.User)
                     .Where(c => c.CurrentStatus == ComplaintStatus.Resolved ||
                                c.CurrentStatus == ComplaintStatus.Verified);
 
@@ -112,7 +114,20 @@ namespace CCMW.Controllers
                         ComplaintId = c.ComplaintId,
                         ComplaintNumber = c.ComplaintNumber ?? "N/A",
                         Title = c.Title ?? "No Title",
+                        Location = c.LocationAddress ?? "Unknown Location",
+                        Category = c.Category != null ? c.Category.CategoryName : "General",
+                        ResolvedBy = c.AssignedTo != null && c.AssignedTo.User != null
+                            ? c.AssignedTo.User.FullName
+                            : (c.AssignedTo != null ? c.AssignedTo.EmployeeId : "Unknown"),
+                        SubmittedAt = c.ResolvedAt != null
+                            ? ((DateTime)c.ResolvedAt).ToString("MMM dd, yyyy - h:mm tt")
+                            : "",
                         Status = c.CurrentStatus == ComplaintStatus.Resolved ? "Pending" : "Verified",
+                        // FIXED: Add photo URLs
+                        BeforePhotoUrl = GetFullUrl(GetBeforePhoto(c.ComplaintId)),
+                        AfterPhotoUrl = GetFullUrl(GetAfterPhoto(c.ComplaintId)),
+                        ResolutionNotes = c.ResolutionNotes ?? "",
+                        FlagReason = (string)null,
                         ResolvedAt = c.ResolvedAt,
                         VerifiedAt = c.StatusUpdatedAt
                     })
