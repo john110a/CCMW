@@ -59,6 +59,27 @@ namespace CCMW.Controllers
                 complaint.IsFake = false;
                 complaint.ComplaintPhotos = null;
 
+                // =====================================================
+                // ADDED: AUTO-DETECT ZONE BASED ON LOCATION COORDINATES
+                // =====================================================
+                if  (complaint.LocationLatitude != 0 && complaint.LocationLongitude != 0)
+                    {
+                    var detectedZoneId = DetectZoneByLocation(
+                        (double)complaint.LocationLatitude,
+                        (double)complaint.LocationLongitude
+                    );
+
+                    if (detectedZoneId.HasValue)
+                    {
+                        complaint.ZoneId = detectedZoneId.Value;
+                        System.Diagnostics.Debug.WriteLine($"✅ Zone auto-detected: {detectedZoneId.Value}");
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine("⚠️ No zone found for this location");
+                    }
+                }
+
                 db.Complaints.Add(complaint);
 
                 db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
@@ -131,7 +152,7 @@ namespace CCMW.Controllers
                 System.Diagnostics.Debug.WriteLine($"User: {currentUser?.Email}, Type: {currentUser?.UserType}, IsAdmin: {isSystemAdmin}");
 
                 var query = from c in db.Complaints
-                            
+
                             join cat in db.ComplaintCategories
                                 on c.CategoryId equals cat.CategoryId into catGroup
                             from cat in catGroup.DefaultIfEmpty()
@@ -926,6 +947,65 @@ namespace CCMW.Controllers
         // =====================================================
         // HELPERS
         // =====================================================
+
+        // =====================================================
+        // ADDED: AUTO-DETECT ZONE BASED ON LOCATION COORDINATES
+        // =====================================================
+        private Guid? DetectZoneByLocation(double lat, double lng)
+        {
+            try
+            {
+                // Get all active zones with center coordinates and is_active = true
+                var zones = db.Zones
+                    .Where(z => z.CenterLatitude.HasValue &&
+                               z.CenterLongitude.HasValue &&
+                               z.IsActive == true)
+                    .ToList();
+
+                if (!zones.Any())
+                {
+                    System.Diagnostics.Debug.WriteLine("No active zones with center coordinates found");
+                    return null;
+                }
+
+                Guid? closestZone = null;
+                double minDistance = double.MaxValue;
+
+                foreach (var zone in zones)
+                {
+                    // Calculate distance from user location to zone center
+                    double distance = CalculateDistance(
+                        lat, lng,
+                        (double)zone.CenterLatitude,
+                        (double)zone.CenterLongitude
+                    );
+
+                    // Default detection radius (you can add a column for custom radius per zone)
+                    double detectionRadiusKm = 5.0; // 5km default
+
+                    // If within detection radius and closer than previous matches
+                    if (distance <= detectionRadiusKm && distance < minDistance)
+                    {
+                        minDistance = distance;
+                        closestZone = zone.ZoneId;
+                    }
+
+                    System.Diagnostics.Debug.WriteLine($"Zone: {zone.ZoneName}, Distance: {distance:F2}km, Within Radius: {distance <= detectionRadiusKm}");
+                }
+
+                if (closestZone.HasValue)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Zone detected: {closestZone.Value} at distance {minDistance:F2}km");
+                }
+
+                return closestZone;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Zone detection error: {ex.Message}");
+                return null;
+            }
+        }
 
         private void NotifyAdminsOfDuplicates(CCMWDbContext dbContext, Guid complaintId)
         {

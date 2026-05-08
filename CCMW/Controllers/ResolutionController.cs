@@ -14,7 +14,7 @@ namespace CCMW.Controllers
     {
         private CCMWDbContext db = new CCMWDbContext();
 
-        // Helper method to get full URL - FIXED to include virtual directory
+        // Helper method to get full URL
         private string GetFullUrl(string relativePath)
         {
             if (string.IsNullOrEmpty(relativePath))
@@ -23,18 +23,19 @@ namespace CCMW.Controllers
             var requestUrl = Request.RequestUri;
             var baseUrl = $"{requestUrl.Scheme}://{requestUrl.Authority}";
 
-            // Get the application path (e.g., /CCMW)
             var appPath = Request.GetRequestContext().VirtualPathRoot;
             if (appPath == "/")
                 appPath = "";
 
             var cleanPath = relativePath.StartsWith("/") ? relativePath.Substring(1) : relativePath;
 
-            // Combine: baseUrl + appPath + cleanPath
             return $"{baseUrl}{appPath}/{cleanPath}";
         }
 
-        // GET api/resolutions/pending
+        // =====================================================
+        // EXISTING METHODS
+        // =====================================================
+
         [HttpGet]
         [Route("pending")]
         public IHttpActionResult GetPendingResolutions()
@@ -78,7 +79,6 @@ namespace CCMW.Controllers
             }
         }
 
-        // GET api/resolutions/all - FIXED to include photos
         [HttpGet]
         [Route("all")]
         public IHttpActionResult GetAllResolutions(
@@ -123,7 +123,6 @@ namespace CCMW.Controllers
                             ? ((DateTime)c.ResolvedAt).ToString("MMM dd, yyyy - h:mm tt")
                             : "",
                         Status = c.CurrentStatus == ComplaintStatus.Resolved ? "Pending" : "Verified",
-                        // FIXED: Add photo URLs
                         BeforePhotoUrl = GetFullUrl(GetBeforePhoto(c.ComplaintId)),
                         AfterPhotoUrl = GetFullUrl(GetAfterPhoto(c.ComplaintId)),
                         ResolutionNotes = c.ResolutionNotes ?? "",
@@ -148,7 +147,264 @@ namespace CCMW.Controllers
             }
         }
 
-        // POST api/resolutions/{id}/verify
+        // =====================================================
+        // GET FLAGGED/FAKE COMPLAINTS - FIXED (using only IsFake)
+        // =====================================================
+        [HttpGet]
+        [Route("flagged")]
+        public IHttpActionResult GetFlaggedComplaints()
+        {
+            try
+            {
+                // Get complaints that are flagged as fake (IsFake == true)
+                var flaggedComplaints = db.Complaints
+                    .Include(c => c.Category)
+                    .Include(c => c.AssignedTo.User)
+                    .Include(c => c.ComplaintPhotos)
+                    .Where(c => c.IsFake == true)  // Only use IsFake
+                    .OrderByDescending(c => c.FakeVerifiedAt ?? c.UpdatedAt)
+                    .Take(50)
+                    .ToList()
+                    .Select(c => new
+                    {
+                        Id = c.ComplaintId,
+                        ComplaintId = c.ComplaintId,
+                        ComplaintNumber = c.ComplaintNumber ?? "N/A",
+                        Title = c.Title ?? "No Title",
+                        Description = c.Description ?? "",
+                        Location = c.LocationAddress ?? "Unknown Location",
+                        Category = c.Category != null ? c.Category.CategoryName : "General",
+                        ResolvedBy = c.AssignedTo != null && c.AssignedTo.User != null
+                            ? c.AssignedTo.User.FullName
+                            : (c.AssignedTo != null ? c.AssignedTo.EmployeeId : "Unknown"),
+                        SubmittedAt = c.ResolvedAt != null
+                            ? ((DateTime)c.ResolvedAt).ToString("MMM dd, yyyy - h:mm tt")
+                            : c.CreatedAt.ToString("MMM dd, yyyy - h:mm tt"),
+                        Status = "Flagged",
+                        BeforePhotoUrl = GetFullUrl(GetBeforePhoto(c.ComplaintId)),
+                        AfterPhotoUrl = GetFullUrl(GetAfterPhoto(c.ComplaintId)),
+                        ResolutionNotes = c.ResolutionNotes ?? "This complaint was flagged as potential fake. Please review the evidence.",
+                        FlagReason = c.IsFake == true ? "Fake Complaint" : null,
+                        FlaggedAt = c.FakeVerifiedAt,
+                        CitizenName = c.Citizen != null ? c.Citizen.FullName : "Unknown",
+                        AllPhotos = c.ComplaintPhotos
+                            .OrderBy(p => p.UploadOrder)
+                            .Select(p => GetFullUrl(p.PhotoUrl))
+                            .ToList()
+                    })
+                    .ToList();
+
+                return Ok(new
+                {
+                    success = true,
+                    totalFlagged = flaggedComplaints.Count,
+                    complaints = flaggedComplaints
+                });
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error getting flagged complaints: {ex.Message}");
+                return Content(System.Net.HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
+        }
+
+        // =====================================================
+        // GET SINGLE FLAGGED COMPLAINT DETAILS - FIXED (using only IsFake)
+        // =====================================================
+        [HttpGet]
+        [Route("flagged/{complaintId:guid}")]
+        public IHttpActionResult GetFlaggedComplaintDetails(Guid complaintId)
+        {
+            try
+            {
+                var complaint = db.Complaints
+                    .Include(c => c.Category)
+                    .Include(c => c.AssignedTo.User)
+                    .Include(c => c.Citizen)
+                    .Include(c => c.ComplaintPhotos)
+                    .FirstOrDefault(c => c.ComplaintId == complaintId);
+
+                if (complaint == null)
+                    return NotFound();
+
+                var result = new
+                {
+                    ComplaintId = complaint.ComplaintId,
+                    ComplaintNumber = complaint.ComplaintNumber,
+                    Title = complaint.Title,
+                    Description = complaint.Description,
+                    Location = complaint.LocationAddress,
+                    Category = complaint.Category?.CategoryName,
+                    CitizenName = complaint.Citizen?.FullName,
+                    CitizenPhone = complaint.Citizen?.PhoneNumber,
+                    ResolvedBy = complaint.AssignedTo?.User?.FullName,
+                    ResolvedAt = complaint.ResolvedAt,
+                    IsFake = complaint.IsFake,
+                    FlaggedAt = complaint.FakeVerifiedAt,
+                    ResolutionNotes = complaint.ResolutionNotes,
+                    BeforePhotos = complaint.ComplaintPhotos
+                        .Where(p => p.PhotoType == "Complaint" || p.PhotoType == "Before" || p.PhotoType == "Initial")
+                        .Select(p => GetFullUrl(p.PhotoUrl))
+                        .ToList(),
+                    AfterPhotos = complaint.ComplaintPhotos
+                        .Where(p => p.PhotoType == "Resolution" || p.PhotoType == "After" || p.PhotoType == "Completed")
+                        .Select(p => GetFullUrl(p.PhotoUrl))
+                        .ToList(),
+                    AllPhotos = complaint.ComplaintPhotos
+                        .OrderBy(p => p.UploadOrder)
+                        .Select(p => GetFullUrl(p.PhotoUrl))
+                        .ToList()
+                };
+
+                return Ok(new { success = true, complaint = result });
+            }
+            catch (Exception ex)
+            {
+                return InternalServerError(ex);
+            }
+        }
+
+        // =====================================================
+        // MARK FLAGGED COMPLAINT AS VERIFIED (NOT FAKE) - FIXED
+        // =====================================================
+        [HttpPost]
+        [Route("flagged/{complaintId:guid}/verify-genuine")]
+        public IHttpActionResult VerifyGenuine(Guid complaintId, [FromBody] VerifyGenuineRequest request)
+        {
+            try
+            {
+                var complaint = db.Complaints.Find(complaintId);
+                if (complaint == null)
+                    return NotFound();
+
+                var oldStatus = complaint.CurrentStatus;
+
+                // Clear fake flag - using only IsFake
+                complaint.IsFake = false;
+                complaint.FakeVerifiedBy = request?.AdminId;
+                complaint.FakeVerifiedAt = DateTime.Now;
+
+                // Set as Verified if it was resolved
+                if (complaint.CurrentStatus == ComplaintStatus.Resolved)
+                {
+                    complaint.CurrentStatus = ComplaintStatus.Verified;
+                }
+
+                complaint.StatusUpdatedAt = DateTime.Now;
+
+                db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
+                {
+                    HistoryId = Guid.NewGuid(),
+                    ComplaintId = complaintId,
+                    PreviousStatus = oldStatus.ToString(),
+                    NewStatus = ComplaintStatus.Verified.ToString(),
+                    ChangeReason = "Flagged complaint verified as genuine",
+                    Notes = request?.Notes ?? "Admin verified this complaint is genuine",
+                    ChangedAt = DateTime.Now
+                });
+
+                db.SaveChanges();
+
+                // Send notification
+                try
+                {
+                    db.Database.ExecuteSqlCommand(
+                        "EXEC sp_NotifyComplaintFlow @ComplaintId, @EventType",
+                        new SqlParameter("@ComplaintId", complaintId),
+                        new SqlParameter("@EventType", "VERIFIED")
+                    );
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Notification error: {ex.Message}");
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Complaint marked as genuine and verified successfully"
+                });
+            }
+            catch (Exception ex)
+            {
+                return InternalServerError(ex);
+            }
+        }
+
+        // =====================================================
+        // MARK FLAGGED COMPLAINT AS FAKE (REJECT) - FIXED
+        // =====================================================
+        [HttpPost]
+        [Route("flagged/{complaintId:guid}/mark-fake")]
+        public IHttpActionResult MarkAsFake(Guid complaintId, [FromBody] MarkFakeRequest request)
+        {
+            try
+            {
+                var complaint = db.Complaints.Find(complaintId);
+                if (complaint == null)
+                    return NotFound();
+
+                var oldStatus = complaint.CurrentStatus;
+
+                // If citizen has fake strikes, increment and potentially ban
+                if (complaint.CitizenId != null)
+                {
+                    var citizen = db.Users.Find(complaint.CitizenId);
+                    if (citizen != null)
+                    {
+                        citizen.FakeStrikes = (citizen.FakeStrikes ?? 0) + 1;
+                        citizen.LastFakeDate = DateTime.Now;
+
+                        // Ban after 3 strikes
+                        if (citizen.FakeStrikes >= 3)
+                        {
+                            citizen.IsBanned = true;
+                            citizen.BanExpiryDate = DateTime.Now.AddDays(30);
+                        }
+                    }
+                }
+
+                // Mark complaint as closed/fake
+                complaint.CurrentStatus = ComplaintStatus.Closed;
+                complaint.IsFake = true;
+                complaint.FakeVerifiedBy = request?.AdminId;
+                complaint.FakeVerifiedAt = DateTime.Now;
+                complaint.ClosedAt = DateTime.Now;
+                complaint.StatusUpdatedAt = DateTime.Now;
+
+                db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
+                {
+                    HistoryId = Guid.NewGuid(),
+                    ComplaintId = complaintId,
+                    PreviousStatus = oldStatus.ToString(),
+                    NewStatus = "Fake",
+                    ChangeReason = request?.Reason ?? "Confirmed as fake",
+                    Notes = request?.Notes,
+                    ChangedAt = DateTime.Now
+                });
+
+                db.SaveChanges();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Complaint marked as fake. Citizen has received a strike.",
+                    fakeStrikes = complaint.Citizen != null ? complaint.Citizen.FakeStrikes : 0
+                });
+            }
+            catch (Exception ex)
+            {
+                return InternalServerError(ex);
+            }
+        }
+
+        // =====================================================
+        // VERIFY RESOLUTION
+        // =====================================================
         [HttpPost]
         [Route("{id}/verify")]
         public IHttpActionResult VerifyResolution(Guid id, [FromBody] VerifyRequest request)
@@ -176,7 +432,6 @@ namespace CCMW.Controllers
 
                 db.SaveChanges();
 
-                // ADDED: Send notification for VERIFIED event
                 try
                 {
                     db.Database.ExecuteSqlCommand(
@@ -207,7 +462,9 @@ namespace CCMW.Controllers
             }
         }
 
-        // POST api/resolutions/{id}/flag
+        // =====================================================
+        // FLAG RESOLUTION FOR REWORK
+        // =====================================================
         [HttpPost]
         [Route("{id}/flag")]
         public IHttpActionResult FlagResolution(Guid id, [FromBody] FlagRequest request)
@@ -239,7 +496,6 @@ namespace CCMW.Controllers
 
                 db.SaveChanges();
 
-                // ADDED: Send notification for REJECTED event
                 try
                 {
                     db.Database.ExecuteSqlCommand(
@@ -270,7 +526,9 @@ namespace CCMW.Controllers
             }
         }
 
-        // GET api/resolutions/stats
+        // =====================================================
+        // GET RESOLUTION STATS - FIXED (added Flagged count)
+        // =====================================================
         [HttpGet]
         [Route("stats")]
         public IHttpActionResult GetResolutionStats()
@@ -281,6 +539,7 @@ namespace CCMW.Controllers
                 {
                     PendingResolutions = db.Complaints.Count(c => c.CurrentStatus == ComplaintStatus.Resolved),
                     VerifiedResolutions = db.Complaints.Count(c => c.CurrentStatus == ComplaintStatus.Verified),
+                    FlaggedResolutions = db.Complaints.Count(c => c.IsFake == true),  // Using only IsFake
                     TotalResolutions = db.Complaints.Count(c =>
                         c.CurrentStatus == ComplaintStatus.Resolved ||
                         c.CurrentStatus == ComplaintStatus.Verified),
@@ -300,6 +559,7 @@ namespace CCMW.Controllers
                 {
                     PendingResolutions = 0,
                     VerifiedResolutions = 0,
+                    FlaggedResolutions = 0,
                     TotalResolutions = 0,
                     ThisMonth = 0,
                     Error = ex.Message
@@ -307,6 +567,9 @@ namespace CCMW.Controllers
             }
         }
 
+        // =====================================================
+        // HELPER METHODS
+        // =====================================================
         private string GetBeforePhoto(Guid complaintId)
         {
             string[] photoTypes = { "Complaint", "Before", "Initial", "Original" };
@@ -365,6 +628,19 @@ namespace CCMW.Controllers
 
     public class FlagRequest
     {
+        public string Reason { get; set; }
+        public string Notes { get; set; }
+    }
+
+    public class VerifyGenuineRequest
+    {
+        public Guid? AdminId { get; set; }
+        public string Notes { get; set; }
+    }
+
+    public class MarkFakeRequest
+    {
+        public Guid? AdminId { get; set; }
         public string Reason { get; set; }
         public string Notes { get; set; }
     }

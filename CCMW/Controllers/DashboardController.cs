@@ -422,6 +422,7 @@ namespace CCMW.Controllers
         }
 
         // ========== ADMIN DASHBOARD ==========
+        // ========== ADMIN DASHBOARD - FIXED with dynamic overdue calculation ==========
         [HttpGet]
         [Route("admin")]
         public IHttpActionResult GetAdminDashboard()
@@ -436,7 +437,29 @@ namespace CCMW.Controllers
                 var resolvedComplaints = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Complaints WHERE CurrentStatus = 5").FirstOrDefault();
                 var activeComplaints = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Complaints WHERE CurrentStatus NOT IN (5,8)").FirstOrDefault();
                 var pendingApprovals = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Complaints WHERE SubmissionStatus = 0").FirstOrDefault();
-                var overdueComplaints = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Complaints WHERE IsOverdue = 1").FirstOrDefault();
+
+                // ===== FIXED: Calculate overdue dynamically (no IsOverdue column needed) =====
+                var now = DateTime.Now;
+
+                // Count overdue assignments (tasks past expected completion date that are not completed)
+                var overdueAssignments = db.ComplaintAssignments
+                    .Count(a => a.CompletedAt == null
+                             && a.IsActive
+                             && a.ExpectedCompletionDate.HasValue
+                             && a.ExpectedCompletionDate.Value < now);
+
+                // Also count complaints that are past their expected resolution date
+                var overdueComplaintsByDate = db.Complaints
+                    .Count(c => c.ExpectedResolutionDate.HasValue
+                             && c.ExpectedResolutionDate.Value < now
+                             && c.CurrentStatus != ComplaintStatus.Resolved
+                             && c.CurrentStatus != ComplaintStatus.Closed);
+
+                // Use the assignment overdue count as the main metric (since that's what staff see)
+                var overdueComplaints = overdueAssignments;
+
+                System.Diagnostics.Debug.WriteLine($"📊 Overdue Calculation - Assignments: {overdueAssignments}, Complaints by date: {overdueComplaintsByDate}, Total: {overdueComplaints}");
+
                 var totalDepartments = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Departments").FirstOrDefault();
                 var totalZones = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Zones").FirstOrDefault();
                 var bannedUsers = db.Database.SqlQuery<int>("SELECT COUNT(*) FROM Users WHERE IsBanned = 1").FirstOrDefault();
@@ -452,7 +475,7 @@ namespace CCMW.Controllers
                     ResolvedComplaints = resolvedComplaints,
                     ActiveComplaints = activeComplaints,
                     PendingApprovals = pendingApprovals,
-                    OverdueComplaints = overdueComplaints,
+                    OverdueComplaints = overdueComplaints,  // Now shows correct count
                     TotalDepartments = totalDepartments,
                     TotalZones = totalZones,
                     BannedUsers = bannedUsers,
@@ -461,38 +484,38 @@ namespace CCMW.Controllers
                 };
 
                 var deptPerformance = db.Database.SqlQuery<DepartmentPerformanceDto>(@"
-                    SELECT TOP 5
-                        department_id as DepartmentId,
-                        department_name as DepartmentName,
-                        performance_score as PerformanceScore,
-                        active_complaints_count as ActiveComplaintsCount,
-                        resolved_complaints_count as ResolvedComplaintsCount,
-                        total_complaints_count as TotalComplaintsCount,
-                        ISNULL(privatization_status, 'Public') as PrivatizationStatus
-                    FROM Departments
-                    ORDER BY performance_score DESC").ToList();
+            SELECT TOP 5
+                department_id as DepartmentId,
+                department_name as DepartmentName,
+                performance_score as PerformanceScore,
+                active_complaints_count as ActiveComplaintsCount,
+                resolved_complaints_count as ResolvedComplaintsCount,
+                total_complaints_count as TotalComplaintsCount,
+                ISNULL(privatization_status, 'Public') as PrivatizationStatus
+            FROM Departments
+            ORDER BY performance_score DESC").ToList();
 
                 var zonePerformance = db.Database.SqlQuery<ZonePerformanceDto>(@"
-                    SELECT TOP 5
-                        zone_id as ZoneId,
-                        zone_name as ZoneName,
-                        zone_number as ZoneNumber,
-                        active_complaints_count as ActiveComplaintsCount,
-                        total_complaints_count as TotalComplaintsCount,
-                        performance_rating as PerformanceRating
-                    FROM Zones
-                    ORDER BY active_complaints_count DESC").ToList();
+            SELECT TOP 5
+                zone_id as ZoneId,
+                zone_name as ZoneName,
+                zone_number as ZoneNumber,
+                active_complaints_count as ActiveComplaintsCount,
+                total_complaints_count as TotalComplaintsCount,
+                performance_rating as PerformanceRating
+            FROM Zones
+            ORDER BY active_complaints_count DESC").ToList();
 
                 var contractorPerformance = db.Database.SqlQuery<ContractorPerformanceDto>(@"
-                    SELECT TOP 5
-                        c.contractor_id as ContractorId,
-                        c.company_name as CompanyName,
-                        c.performance_score as PerformanceScore,
-                        c.sla_compliance_rate as SLAComplianceRate,
-                        (SELECT COUNT(*) FROM ContractorZoneAssignments WHERE contractor_id = c.contractor_id AND is_active = 1) as AssignedZones
-                    FROM Contractors c
-                    WHERE c.is_active = 1
-                    ORDER BY c.performance_score DESC").ToList();
+            SELECT TOP 5
+                c.contractor_id as ContractorId,
+                c.company_name as CompanyName,
+                c.performance_score as PerformanceScore,
+                c.sla_compliance_rate as SLAComplianceRate,
+                (SELECT COUNT(*) FROM ContractorZoneAssignments WHERE contractor_id = c.contractor_id AND is_active = 1) as AssignedZones
+            FROM Contractors c
+            WHERE c.is_active = 1
+            ORDER BY c.performance_score DESC").ToList();
 
                 return Ok(new
                 {

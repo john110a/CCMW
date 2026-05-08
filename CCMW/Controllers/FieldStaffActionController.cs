@@ -1,10 +1,11 @@
 ﻿using CCMW.Models;
 using System;
+using System.Collections.Generic;
 using System.Data.Entity;
+using System.Data.SqlClient;
 using System.Linq;
 using System.Net;
 using System.Web.Http;
-using System.Data.SqlClient;  // ADD THIS FOR STORED PROCEDURE
 
 namespace CCMW.Controllers
 {
@@ -32,7 +33,6 @@ namespace CCMW.Controllers
 
         private double ToRadians(double angle) => Math.PI * angle / 180.0;
 
-        // Helper to drill to root exception
         private string GetRootCause(Exception ex)
         {
             Exception innermost = ex;
@@ -75,6 +75,9 @@ namespace CCMW.Controllers
         // =====================================================
         // GET MY ASSIGNMENTS
         // =====================================================
+        // =====================================================
+        // GET MY ASSIGNMENTS - FIXED with Pending and correct Completed
+        // =====================================================
         [HttpGet]
         [Route("my-assignments/{staffId:guid}")]
         public IHttpActionResult GetMyAssignments(Guid staffId, [FromUri] string status = "active")
@@ -87,12 +90,14 @@ namespace CCMW.Controllers
                     .Include(a => a.Complaint.Zone)
                     .Where(a => a.AssignedToId == staffId);
 
+                // For status filter - but we need ALL assignments for stats
+                var filteredQuery = query;
                 if (status == "active")
-                    query = query.Where(a => a.CompletedAt == null && a.IsActive);
+                    filteredQuery = filteredQuery.Where(a => a.CompletedAt == null && a.IsActive);
                 else if (status == "completed")
-                    query = query.Where(a => a.CompletedAt != null);
+                    filteredQuery = filteredQuery.Where(a => a.CompletedAt != null);
 
-                var assignments = query
+                var assignments = filteredQuery
                     .OrderByDescending(a => a.AssignedAt)
                     .Select(a => new
                     {
@@ -122,15 +127,38 @@ namespace CCMW.Controllers
                     })
                     .ToList();
 
+                // Calculate stats from ALL assignments (not just filtered)
+                var allAssignments = query
+                    .Select(a => new
+                    {
+                        a.CompletedAt,
+                        a.StartedAt,
+                        a.AcceptedAt,
+                        a.IsActive
+                    })
+                    .ToList();
+
+                var totalCount = allAssignments.Count;
+                var completedCount = allAssignments.Count(a => a.CompletedAt != null);
+                var inProgressCount = allAssignments.Count(a => a.StartedAt != null && a.CompletedAt == null);
+                var acceptedCount = allAssignments.Count(a => a.AcceptedAt != null && a.StartedAt == null && a.CompletedAt == null);
+                var assignedCount = allAssignments.Count(a => a.AcceptedAt == null && a.StartedAt == null && a.CompletedAt == null && a.IsActive);
+
+                // Pending = tasks that are Assigned or Accepted (need action)
+                var pendingCount = assignedCount + acceptedCount;
+
                 var stats = new
                 {
-                    Total = assignments.Count,
-                    Completed = assignments.Count(a => a.Status == "Completed"),
-                    InProgress = assignments.Count(a => a.Status == "InProgress"),
-                    Accepted = assignments.Count(a => a.Status == "Accepted"),
-                    Assigned = assignments.Count(a => a.Status == "Assigned"),
+                    Total = totalCount,
+                    Completed = completedCount,
+                    InProgress = inProgressCount,
+                    Accepted = acceptedCount,
+                    Assigned = assignedCount,
+                    Pending = pendingCount,      // ADDED - for frontend dashboard
                     Overdue = assignments.Count(a => a.IsOverdue)
                 };
+
+                System.Diagnostics.Debug.WriteLine($"📊 Stats - Total: {totalCount}, Completed: {completedCount}, Pending: {pendingCount}, InProgress: {inProgressCount}");
 
                 return Ok(new { Statistics = stats, Assignments = assignments });
             }
@@ -147,7 +175,7 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // ACCEPT ASSIGNMENT - FIXED
+        // ACCEPT ASSIGNMENT
         // =====================================================
         [HttpPost]
         [Route("{assignmentId:guid}/accept")]
@@ -155,7 +183,6 @@ namespace CCMW.Controllers
         {
             try
             {
-                // 1. Get assignment
                 var assignment = db.ComplaintAssignments
                     .Include(a => a.Complaint)
                     .FirstOrDefault(a => a.AssignmentId == assignmentId
@@ -174,7 +201,6 @@ namespace CCMW.Controllers
                 if (assignment.Complaint == null)
                     return Content(HttpStatusCode.BadRequest, new { success = false, message = "Complaint not found" });
 
-                // 2. Distance check
                 if (request != null && request.Latitude.HasValue && request.Longitude.HasValue)
                 {
                     if (assignment.Complaint.LocationLatitude != 0m && assignment.Complaint.LocationLongitude != 0m)
@@ -196,18 +222,13 @@ namespace CCMW.Controllers
                     }
                 }
 
-                // 3. Update assignment AcceptedAt
                 var oldStatus = assignment.Complaint.CurrentStatus.ToString();
                 assignment.AcceptedAt = DateTime.Now;
-
-                // 4. Update complaint status
                 assignment.Complaint.CurrentStatus = ComplaintStatus.InProgress;
                 assignment.Complaint.StatusUpdatedAt = DateTime.Now;
 
-                // 5. CRITICAL FIX: Save assignment + complaint FIRST separately
                 db.SaveChanges();
 
-                // 6. Add status history in a separate save — failure here won't roll back step 5
                 try
                 {
                     db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
@@ -225,7 +246,6 @@ namespace CCMW.Controllers
                 }
                 catch (Exception histEx)
                 {
-                    // Non-critical — assignment already saved above
                     System.Diagnostics.Debug.WriteLine($"Status history warning: {GetRootCause(histEx)}");
                 }
 
@@ -340,10 +360,8 @@ namespace CCMW.Controllers
                         staff.PerformanceScore = (decimal)staff.CompletedAssignments / staff.TotalAssignments * 100;
                 }
 
-                // Save resolution first
                 db.SaveChanges();
 
-                // Status history separately
                 try
                 {
                     db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
@@ -363,7 +381,6 @@ namespace CCMW.Controllers
                     System.Diagnostics.Debug.WriteLine($"Status history warning: {GetRootCause(histEx)}");
                 }
 
-                // ADD NOTIFICATION: Send notification for COMPLETED event
                 try
                 {
                     db.Database.ExecuteSqlCommand(
@@ -398,7 +415,7 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // GET NEARBY COMPLAINTS
+        // GET NEARBY COMPLAINTS - FIXED (using IsFake)
         // =====================================================
         [HttpGet]
         [Route("{staffId:guid}/nearby-complaints")]
@@ -430,7 +447,7 @@ namespace CCMW.Controllers
                         c.Title,
                         c.Description,
                         c.Priority,
-                        c.CurrentStatus,
+                        CurrentStatus = c.CurrentStatus.ToString(),
                         CategoryName = c.Category != null ? c.Category.CategoryName : "Unknown",
                         ZoneName = c.Zone != null ? c.Zone.ZoneName : "Unknown",
                         c.LocationAddress,
@@ -438,7 +455,9 @@ namespace CCMW.Controllers
                         LocationLongitude = (double)c.LocationLongitude,
                         Distance = CalculateDistance(lat, lng, (double)c.LocationLatitude, (double)c.LocationLongitude),
                         c.CreatedAt,
-                        c.UpvoteCount
+                        c.UpvoteCount,
+                        IsFlagged = c.IsFake == true,
+                        FlagReason = c.IsFake == true ? "Flagged as potential fake complaint" : null
                     })
                     .Where(x => x.Distance <= radiusKm)
                     .OrderBy(x => x.Distance)
@@ -466,7 +485,321 @@ namespace CCMW.Controllers
         }
 
         // =====================================================
-        // UPDATE STAFF LOCATION - FIXED (columns now uncommented)
+        // GET FLAGGED COMPLAINTS FOR STAFF - FIXED (using IsFake)
+        // =====================================================
+        // =====================================================
+        // GET FLAGGED COMPLAINTS FOR STAFF - FIXED (matching types)
+        // =====================================================
+        [HttpGet]
+        [Route("{staffId:guid}/flagged-complaints")]
+        public IHttpActionResult GetFlaggedComplaints(Guid staffId)
+        {
+            try
+            {
+                var staff = db.StaffProfiles
+                    .Include(s => s.Department)
+                    .FirstOrDefault(s => s.StaffId == staffId);
+
+                if (staff == null)
+                    return NotFound("Staff not found");
+
+                // DEBUG: Log staff info
+                System.Diagnostics.Debug.WriteLine($"=== DEBUG: Staff ID: {staffId}, Department: {staff.DepartmentId} ===");
+
+                // DEBUG: Check if any complaints have IsFake = true in the database
+                var totalFakeComplaints = db.Complaints.Count(c => c.IsFake == true);
+                System.Diagnostics.Debug.WriteLine($"DEBUG: Total fake complaints in system: {totalFakeComplaints}");
+
+                // DEBUG: Check complaints assigned to this staff
+                var staffAssignments = db.ComplaintAssignments
+                    .Where(a => a.AssignedToId == staffId)
+                    .Select(a => new { a.ComplaintId, a.Complaint.IsFake, a.CompletedAt })
+                    .ToList();
+
+                System.Diagnostics.Debug.WriteLine($"DEBUG: Staff has {staffAssignments.Count} total assignments");
+                foreach (var assign in staffAssignments)
+                {
+                    System.Diagnostics.Debug.WriteLine($"DEBUG: Complaint {assign.ComplaintId} - IsFake: {assign.IsFake}, CompletedAt: {assign.CompletedAt}");
+                }
+
+                // Now get flagged complaints (remove ALL filters except IsFake and AssignedToId)
+                var flaggedComplaints = db.ComplaintAssignments
+                    .Include(a => a.Complaint)
+                    .Include(a => a.Complaint.Category)
+                    .Include(a => a.Complaint.Zone)
+                    .Where(a => a.AssignedToId == staffId
+                             && a.Complaint != null
+                             && a.Complaint.IsFake == true)  // ONLY filter on IsFake and AssignedToId
+                    .Select(a => new
+                    {
+                        a.ComplaintId,
+                        a.Complaint.ComplaintNumber,
+                        a.Complaint.Title,
+                        a.Complaint.Description,
+                        a.Complaint.Priority,
+                        CurrentStatus = a.Complaint.CurrentStatus.ToString(),
+                        FlagStatus = a.Complaint.IsFake == true ? "Fake" : null,
+                        FlagReason = a.Complaint.IsFake == true ? "Flagged as potential fake complaint" : null,
+                        FlaggedAt = a.Complaint.FakeVerifiedAt,
+                        CategoryName = a.Complaint.Category != null ? a.Complaint.Category.CategoryName : "Unknown",
+                        ZoneName = a.Complaint.Zone != null ? a.Complaint.Zone.ZoneName : "Unknown",
+                        a.Complaint.LocationAddress,
+                        LocationLatitude = (double)a.Complaint.LocationLatitude,
+                        LocationLongitude = (double)a.Complaint.LocationLongitude,
+                        a.Complaint.CreatedAt,
+                        AssignmentId = (Guid?)a.AssignmentId,
+                        a.CompletedAt,
+                        a.IsActive
+                    })
+                    .ToList();
+
+                System.Diagnostics.Debug.WriteLine($"DEBUG: Found {flaggedComplaints.Count} flagged complaints from assignments");
+
+                var deptFlaggedComplaints = db.Complaints
+                    .Include(c => c.Category)
+                    .Include(c => c.Zone)
+                    .Where(c => c.DepartmentId == staff.DepartmentId
+                             && c.IsFake == true
+                             && !db.ComplaintAssignments.Any(a => a.ComplaintId == c.ComplaintId && a.AssignedToId == staffId))
+                    .Select(c => new
+                    {
+                        c.ComplaintId,
+                        c.ComplaintNumber,
+                        c.Title,
+                        c.Description,
+                        c.Priority,
+                        CurrentStatus = c.CurrentStatus.ToString(),
+                        FlagStatus = c.IsFake == true ? "Fake" : null,
+                        FlagReason = c.IsFake == true ? "Flagged as potential fake complaint" : null,
+                        FlaggedAt = c.FakeVerifiedAt,
+                        CategoryName = c.Category != null ? c.Category.CategoryName : "Unknown",
+                        ZoneName = c.Zone != null ? c.Zone.ZoneName : "Unknown",
+                        c.LocationAddress,
+                        LocationLatitude = (double)c.LocationLatitude,
+                        LocationLongitude = (double)c.LocationLongitude,
+                        c.CreatedAt,
+                        AssignmentId = (Guid?)null,
+                        CompletedAt = (DateTime?)null,
+                        IsActive = false
+                    })
+                    .ToList();
+
+                System.Diagnostics.Debug.WriteLine($"DEBUG: Found {deptFlaggedComplaints.Count} unassigned flagged complaints in department");
+
+                var allFlagged = flaggedComplaints
+                    .Concat(deptFlaggedComplaints)
+                    .OrderByDescending(c => c.FlaggedAt)
+                    .ToList();
+
+                return Ok(new
+                {
+                    success = true,
+                    totalFlagged = allFlagged.Count,
+                    complaints = allFlagged
+                });
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"ERROR: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"STACK: {ex.StackTrace}");
+
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    message = "Failed to fetch flagged complaints",
+                    error = ex.Message,
+                    rootCause = GetRootCause(ex)
+                });
+            }
+        }
+
+        // =====================================================
+        // RE-COMPLETE FLAGGED COMPLAINT - FIXED (using IsFake)
+        // =====================================================
+        [HttpPost]
+        [Route("{complaintId:guid}/recomplete")]
+        public IHttpActionResult ReCompleteFlaggedComplaint(Guid complaintId, [FromBody] RecompleteRequest request)
+        {
+            try
+            {
+                if (request == null || request.StaffId == Guid.Empty)
+                    return BadRequest("Staff ID is required");
+
+                var complaint = db.Complaints
+                    .FirstOrDefault(c => c.ComplaintId == complaintId);
+
+                if (complaint == null)
+                    return NotFound("Complaint not found");
+
+                // Verify this complaint is assigned to this staff member
+                var assignment = db.ComplaintAssignments
+                    .FirstOrDefault(a => a.ComplaintId == complaintId
+                                      && a.AssignedToId == request.StaffId);
+
+                if (assignment == null)
+                    return Content(HttpStatusCode.Forbidden, new
+                    {
+                        success = false,
+                        message = "You are not authorized to re-complete this complaint"
+                    });
+
+                var oldStatus = complaint.CurrentStatus.ToString();
+                var wasCompleted = assignment.CompletedAt != null;
+
+                // Reset the complaint status for re-completion
+                complaint.CurrentStatus = ComplaintStatus.InProgress;
+                complaint.StatusUpdatedAt = DateTime.Now;
+
+                // Append notes to existing resolution notes
+                var existingNotes = complaint.ResolutionNotes ?? "";
+                complaint.ResolutionNotes = existingNotes + $"\n\n[RE-COMPLETED at {DateTime.Now} by Staff {request.StaffId}]:\n{request.Notes}";
+
+                // Clear fake flag when staff is re-completing with evidence
+                if (!string.IsNullOrWhiteSpace(request.Notes) && request.Notes.Length > 10)
+                {
+                    complaint.IsFake = false;
+                    complaint.FakeVerifiedBy = null;
+                    complaint.FakeVerifiedAt = null;
+                }
+
+                // Reset assignment if it was completed
+                if (assignment.CompletedAt != null)
+                {
+                    assignment.CompletedAt = null;
+                    assignment.IsActive = true;
+                }
+
+                var recompletedAt = DateTime.Now;
+                db.SaveChanges();
+
+                // Add status history
+                try
+                {
+                    db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
+                    {
+                        HistoryId = Guid.NewGuid(),
+                        ComplaintId = complaintId,
+                        PreviousStatus = oldStatus,
+                        NewStatus = ComplaintStatus.InProgress.ToString(),
+                        ChangedById = request.StaffId,
+                        ChangedAt = recompletedAt,
+                        ChangeReason = wasCompleted ? "Completed flagged complaint re-opened" : "Flagged complaint re-completed",
+                        Notes = $"Re-completed by staff with notes: {request.Notes}"
+                    });
+                    db.SaveChanges();
+                }
+                catch (Exception histEx)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Status history warning: {GetRootCause(histEx)}");
+                }
+
+                // Update staff performance (decrement completed count if it was completed)
+                var staff = db.StaffProfiles.Find(request.StaffId);
+                if (staff != null && wasCompleted)
+                {
+                    staff.CompletedAssignments = Math.Max(staff.CompletedAssignments - 1, 0);
+                    if (staff.TotalAssignments > 0)
+                        staff.PerformanceScore = (decimal)staff.CompletedAssignments / staff.TotalAssignments * 100;
+                    db.SaveChanges();
+                }
+
+                // Send notification
+                try
+                {
+                    db.Database.ExecuteSqlCommand(
+                        "EXEC sp_NotifyComplaintFlow @ComplaintId, @EventType",
+                        new SqlParameter("@ComplaintId", complaintId),
+                        new SqlParameter("@EventType", "REOPENED")
+                    );
+                }
+                catch (Exception notifEx)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Notification warning: {GetRootCause(notifEx)}");
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    message = wasCompleted ? "Completed complaint has been re-opened for re-completion" : "Complaint has been re-opened for re-completion",
+                    complaintId = complaintId,
+                    recompletedAt = recompletedAt,
+                    newStatus = "InProgress"
+                });
+            }
+            catch (Exception ex)
+            {
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    message = "Failed to re-complete complaint",
+                    error = ex.Message,
+                    rootCause = GetRootCause(ex)
+                });
+            }
+        }
+
+        // =====================================================
+        // SUBMIT EVIDENCE FOR FLAGGED COMPLAINT - FIXED
+        // =====================================================
+        [HttpPost]
+        [Route("{complaintId:guid}/submit-evidence")]
+        public IHttpActionResult SubmitFlaggedEvidence(Guid complaintId, [FromBody] EvidenceRequest request)
+        {
+            try
+            {
+                if (request == null || request.StaffId == Guid.Empty)
+                    return BadRequest("Staff ID is required");
+
+                if (string.IsNullOrWhiteSpace(request.Evidence))
+                    return BadRequest("Evidence details are required");
+
+                var complaint = db.Complaints
+                    .FirstOrDefault(c => c.ComplaintId == complaintId);
+
+                if (complaint == null)
+                    return NotFound("Complaint not found");
+
+                // Verify authorization
+                var assignment = db.ComplaintAssignments
+                    .FirstOrDefault(a => a.ComplaintId == complaintId
+                                      && a.AssignedToId == request.StaffId);
+
+                if (assignment == null)
+                    return Content(HttpStatusCode.Forbidden, new
+                    {
+                        success = false,
+                        message = "You are not authorized to submit evidence for this complaint"
+                    });
+
+                // Add evidence to complaint
+                var existingNotes = complaint.ResolutionNotes ?? "";
+                complaint.ResolutionNotes = existingNotes + $"\n\n[EVIDENCE SUBMITTED at {DateTime.Now} by Staff]:\n{request.Evidence}";
+                complaint.StatusUpdatedAt = DateTime.Now;
+
+                db.SaveChanges();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Evidence submitted successfully. Complaint is now pending review.",
+                    complaintId = complaintId,
+                    submittedAt = DateTime.Now
+                });
+            }
+            catch (Exception ex)
+            {
+                return Content(HttpStatusCode.InternalServerError, new
+                {
+                    success = false,
+                    message = "Failed to submit evidence",
+                    error = ex.Message,
+                    rootCause = GetRootCause(ex)
+                });
+            }
+        }
+
+        // =====================================================
+        // UPDATE STAFF LOCATION
         // =====================================================
         [HttpPost]
         [Route("{staffId:guid}/location")]
@@ -482,11 +815,6 @@ namespace CCMW.Controllers
 
                 if (location == null || !location.Latitude.HasValue || !location.Longitude.HasValue)
                     return BadRequest("Location coordinates are required");
-
-                // These columns exist in your DB schema — now enabled
-                //staff.LastLatitude = (decimal)location.Latitude.Value;
-                //staff.LastLongitude = (decimal)location.Longitude.Value;
-                //staff.LastLocationUpdate = DateTime.Now;
 
                 db.SaveChanges();
 
@@ -700,5 +1028,18 @@ namespace CCMW.Controllers
     {
         public string ResolutionNotes { get; set; }
         public string AfterPhotoUrl { get; set; }
+    }
+
+    public class RecompleteRequest
+    {
+        public Guid StaffId { get; set; }
+        public string Notes { get; set; }
+    }
+
+    public class EvidenceRequest
+    {
+        public Guid StaffId { get; set; }
+        public string Evidence { get; set; }
+        public List<string> PhotoUrls { get; set; }
     }
 }
