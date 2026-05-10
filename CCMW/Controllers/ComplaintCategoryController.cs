@@ -109,6 +109,7 @@ namespace CCMW.Controllers
         }
 
         // POST: api/complaint-categories (Admin only)
+        // FIXED: POST api/complaint-categories
         [HttpPost]
         [Route("")]
         public IHttpActionResult CreateCategory([FromBody] ComplaintCategory category)
@@ -118,9 +119,32 @@ namespace CCMW.Controllers
                 if (category == null)
                     return BadRequest("Category data is required.");
 
+                if (string.IsNullOrEmpty(category.CategoryName))
+                    return BadRequest("Category name is required.");
+
+                if (category.DepartmentId == null || category.DepartmentId == Guid.Empty)
+                    return BadRequest("Department ID is required.");
+
+                // Check if category code already exists
+                if (!string.IsNullOrEmpty(category.CategoryCode) &&
+                    db.ComplaintCategories.Any(c => c.CategoryCode == category.CategoryCode))
+                {
+                    return BadRequest("Category code already exists.");
+                }
+
                 category.CategoryId = Guid.NewGuid();
                 category.CreatedAt = DateTime.Now;
                 category.IsActive = true;
+
+                // Set default values if not provided
+                if (string.IsNullOrEmpty(category.IconName))
+                    category.IconName = "report_problem";
+
+                if (string.IsNullOrEmpty(category.ColorCode))
+                    category.ColorCode = "#2196F3";
+
+                if (category.PriorityWeight == 0)
+                    category.PriorityWeight = 1;
 
                 db.ComplaintCategories.Add(category);
                 db.SaveChanges();
@@ -128,7 +152,8 @@ namespace CCMW.Controllers
                 return Ok(new
                 {
                     Message = "Category created successfully",
-                    CategoryId = category.CategoryId
+                    CategoryId = category.CategoryId,
+                    CategoryName = category.CategoryName
                 });
             }
             catch (Exception ex)

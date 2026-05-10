@@ -5,6 +5,7 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace CCMW.Models
 {
+    [Table("Zones")]
     public class Zone
     {
         [Key]
@@ -62,18 +63,51 @@ namespace CCMW.Models
         [Column("color_code")]
         public string ColorCode { get; set; } // Hex color for zone
 
-        // ADD THIS PROPERTY - IsActive flag for soft delete
         [Column("is_active")]
         public bool IsActive { get; set; } = true;
+
+        // =====================================================
+        // SUB-ZONE SUPPORT (Parent-Child Relationship)
+        // =====================================================
+
+        [Column("parent_zone_id")]
+        public Guid? ParentZoneId { get; set; }
+
+        [Column("level")]
+        public int Level { get; set; } = 1; // 1 = Main Zone, 2 = Sub-Zone, 3 = Micro-Zone
+
+        [Column("display_order")]
+        public int DisplayOrder { get; set; } = 0;
+
+        // Navigation properties for parent-child relationship
+        [ForeignKey("ParentZoneId")]
+        public virtual Zone ParentZone { get; set; }
+
+        [InverseProperty("ParentZone")]
+        public virtual ICollection<Zone> SubZones { get; set; } = new HashSet<Zone>();
 
         // Department-specific polygons (for sub-zones)
         [NotMapped]
         public Dictionary<Guid, string> DepartmentPolygons { get; set; }
 
+        // Navigation properties
         public virtual ICollection<User> Users { get; set; }
         public virtual ICollection<StaffProfile> Staffs { get; set; }
         public virtual ICollection<Complaint> Complaints { get; set; }
         public virtual ICollection<ZoneDepartment> ZoneDepartments { get; set; } = new HashSet<ZoneDepartment>();
         public virtual ICollection<ContractorZoneAssignment> ContractorAssignments { get; set; }
+
+        // Helper properties for UI
+        [NotMapped]
+        public bool IsMainZone => Level == 1;
+
+        [NotMapped]
+        public bool IsSubZone => Level == 2;
+
+        [NotMapped]
+        public bool HasSubZones => SubZones?.Count > 0;
+
+        [NotMapped]
+        public string LevelDisplay => Level == 1 ? "Main Zone" : (Level == 2 ? "Sub-Zone" : "Micro-Zone");
     }
 }
