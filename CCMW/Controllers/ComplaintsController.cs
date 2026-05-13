@@ -1,5 +1,6 @@
 ﻿using CCMW.Models;
 using System;
+using System.Collections.Generic;
 using System.Data.Entity;
 using System.Data.SqlClient;
 using System.Linq;
@@ -62,8 +63,8 @@ namespace CCMW.Controllers
                 // =====================================================
                 // ADDED: AUTO-DETECT ZONE BASED ON LOCATION COORDINATES
                 // =====================================================
-                if  (complaint.LocationLatitude != 0 && complaint.LocationLongitude != 0)
-                    {
+                if (complaint.LocationLatitude != 0 && complaint.LocationLongitude != 0)
+                {
                     var detectedZoneId = DetectZoneByLocation(
                         (double)complaint.LocationLatitude,
                         (double)complaint.LocationLongitude
@@ -1237,15 +1238,594 @@ namespace CCMW.Controllers
                 return NotFound();
             return Content(HttpStatusCode.NotFound, new { error = message });
         }
-    }
+        //========================================
+        // extra route
+        //=========================================
+        // =====================================================
+        // SUBMIT COMPLAINT WITH AUTO-MERGE
+        // =====================================================
+        // =====================================================
+        // FIND SIMILAR COMPLAINTS FOR AUTO-MERGE (FIXED)
+        // =====================================================
 
-    // =====================================================
-    // DTO CLASSES
-    // =====================================================
 
-    public class FakeMarkRequest
-    {
-        public Guid AdminId { get; set; }
-        public string Notes { get; set; }
+        // =====================================================
+        // AUTO-MERGE COMPLAINT (FIXED)
+        // =====================================================
+
+        //    public Complaint AutoMergeComplaint(Complaint newComplaint, List<Complaint> similarComplaints, Guid mergedByUserId)
+        //    {
+        //        // Combine all complaints (new + existing duplicates)
+        //        var allComplaints = new List<Complaint> { newComplaint };
+        //        allComplaints.AddRange(similarComplaints);
+
+        //        // =====================================================
+        //        // CREATE MERGED TITLE
+        //        // =====================================================
+        //        var allTitles = allComplaints.Select(c => c.Title).ToList();
+        //        string mergedTitle = string.Join(" | ", allTitles.Take(3));
+        //        if (allTitles.Count > 3)
+        //            mergedTitle += $" + {allTitles.Count - 3} more";
+        //        if (mergedTitle.Length > 200)
+        //            mergedTitle = mergedTitle.Substring(0, 197) + "...";
+
+        //        // =====================================================
+        //        // CREATE MERGED DESCRIPTION
+        //        // =====================================================
+        //        var allDescriptions = new List<string>();
+        //        foreach (var complaint in allComplaints)
+        //        {
+        //            allDescriptions.Add($"=== {complaint.ComplaintNumber} ===\n{complaint.Description}");
+        //        }
+        //        string mergedDescription = string.Join("\n\n---\n\n", allDescriptions);
+        //        if (mergedDescription.Length > 4000)
+        //            mergedDescription = mergedDescription.Substring(0, 3997) + "...";
+
+        //        // =====================================================
+        //        // CALCULATE TOTALS
+        //        // =====================================================
+        //        int totalUpvotes = allComplaints.Sum(c => c.UpvoteCount);
+        //        int totalViews = allComplaints.Sum(c => c.ViewCount);
+
+        //        // Determine highest priority among all
+        //        string highestPriority = "Medium";
+        //        if (allComplaints.Any(c => c.Priority == "Critical"))
+        //            highestPriority = "Critical";
+        //        else if (allComplaints.Any(c => c.Priority == "High"))
+        //            highestPriority = "High";
+        //        else if (allComplaints.All(c => c.Priority == "Low"))
+        //            highestPriority = "Low";
+
+        //        // Get the first complaint's location as the primary location
+        //        var primaryLocation = allComplaints.First();
+
+        //        // Get first complaint's CitizenId (or use the new complaint's)
+        //        Guid citizenId = newComplaint.CitizenId ?? Guid.Empty;
+        //        if (citizenId == Guid.Empty && primaryLocation.CitizenId != null)
+        //            citizenId = primaryLocation.CitizenId.Value;
+
+        //        // =====================================================
+        //        // CREATE NEW MERGED COMPLAINT
+        //        // =====================================================
+        //        var mergedComplaint = new Complaint
+        //        {
+        //            ComplaintId = Guid.NewGuid(),
+        //            ComplaintNumber = $"AUTO-{DateTime.Now:yyyyMMddHHmmss}-{Guid.NewGuid().ToString().Substring(0, 4)}",
+        //            Title = mergedTitle,
+        //            Description = mergedDescription,
+        //            CategoryId = newComplaint.CategoryId,
+        //            DepartmentId = newComplaint.DepartmentId,
+        //            ZoneId = newComplaint.ZoneId,
+        //            CitizenId = citizenId,
+        //            LocationLatitude = (decimal)primaryLocation.LocationLatitude,
+        //            LocationLongitude = (decimal)primaryLocation.LocationLongitude,
+        //            LocationAddress = primaryLocation.LocationAddress ?? "",
+        //            LocationLandmark = primaryLocation.LocationLandmark,
+        //            Priority = highestPriority,
+        //            UpvoteCount = totalUpvotes,
+        //            ViewCount = totalViews,
+        //            CurrentStatus = (int)ComplaintStatus.Submitted,
+        //            SubmissionStatus = (int)SubmissionStatus.PendingApproval,
+        //            CreatedAt = DateTime.Now,
+        //            UpdatedAt = DateTime.Now,
+        //            IsDuplicate = false,
+        //            IsFake = false
+        //        };
+
+        //        db.Complaints.Add(mergedComplaint);
+        //        db.SaveChanges();
+
+        //        // =====================================================
+        //        // COPY PHOTOS FROM ALL COMPLAINTS
+        //        // =====================================================
+        //        int orderCounter = 1;
+        //        foreach (var complaint in allComplaints)
+        //        {
+        //            var photos = db.ComplaintPhotos.Where(p => p.ComplaintId == complaint.ComplaintId).ToList();
+        //            foreach (var photo in photos)
+        //            {
+        //                db.ComplaintPhotos.Add(new ComplaintPhoto
+        //                {
+        //                    PhotoId = Guid.NewGuid(),
+        //                    ComplaintId = mergedComplaint.ComplaintId,
+        //                    PhotoUrl = photo.PhotoUrl,
+        //                    PhotoType = photo.PhotoType,
+        //                    UploadOrder = orderCounter++,
+        //                    UploadedAt = DateTime.Now,
+        //                    UploadedById = mergedByUserId
+        //                });
+        //            }
+        //        }
+
+        //        // =====================================================
+        //        // CREATE CLUSTER FOR MERGED COMPLAINT
+        //        // =====================================================
+        //        var cluster = new DuplicateCluster
+        //        {
+        //            ClusterId = Guid.NewGuid(),
+        //            PrimaryComplaintId = mergedComplaint.ComplaintId,
+        //            CategoryId = mergedComplaint.CategoryId,
+        //            LocationLatitude = mergedComplaint.LocationLatitude,
+        //            LocationLongitude = mergedComplaint.LocationLongitude,
+        //            ClusterRadiusMeters = 200,
+        //            TotalComplaintsMerged = allComplaints.Count,
+        //            TotalCombinedUpvotes = totalUpvotes,
+        //            CreatedAt = DateTime.Now,
+        //            UpdatedAt = DateTime.Now
+        //        };
+
+        //        db.DuplicateClusters.Add(cluster);
+        //        db.SaveChanges();
+
+        //        // =====================================================
+        //        // ADD ENTRIES FOR ALL COMPLAINTS IN CLUSTER
+        //        // =====================================================
+        //        // Entry for the new merged complaint
+        //        db.DuplicateEntries.Add(new DuplicateEntry
+        //        {
+        //            EntryId = Guid.NewGuid(),
+        //            ClusterId = cluster.ClusterId,
+        //            ComplaintId = mergedComplaint.ComplaintId,
+        //            SimilarityScore = 100,
+        //            SimilarityFactors = "{\"type\":\"auto_merged_result\"}",
+        //            MergedAt = DateTime.Now,
+        //            MergedById = mergedByUserId
+        //        });
+
+        //        // Mark all original complaints as merged
+        //        foreach (var complaint in allComplaints)
+        //        {
+        //            complaint.IsDuplicate = true;
+        //            complaint.MergedIntoComplaintId = mergedComplaint.ComplaintId;
+        //            complaint.UpdatedAt = DateTime.Now;
+
+        //            db.DuplicateEntries.Add(new DuplicateEntry
+        //            {
+        //                EntryId = Guid.NewGuid(),
+        //                ClusterId = cluster.ClusterId,
+        //                ComplaintId = complaint.ComplaintId,
+        //                SimilarityScore = 100,
+        //                SimilarityFactors = "{\"type\":\"auto_merged_original\"}",
+        //                MergedAt = DateTime.Now,
+        //                MergedById = mergedByUserId
+        //            });
+        //        }
+
+        //        db.SaveChanges();
+
+        //        // =====================================================
+        //        // ADD STATUS HISTORY
+        //        // =====================================================
+        //        db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
+        //        {
+        //            HistoryId = Guid.NewGuid(),
+        //            ComplaintId = mergedComplaint.ComplaintId,
+        //            PreviousStatus = null,
+        //            NewStatus = ComplaintStatus.Submitted.ToString(),
+        //            ChangedById = mergedByUserId,
+        //            ChangedAt = DateTime.Now,
+        //            Notes = $"Auto-merged {allComplaints.Count} duplicate complaints"
+        //        });
+
+        //        db.SaveChanges();
+
+        //        return mergedComplaint;
+        //    }
+
+        //    // Add this method to share DbContext
+        //    public void SetDbContext(CCMWDbContext context)
+        //    {
+        //        this.db = context;
+        //    }
+
+        //}// Add this to your ComplaintsController.cs (not DuplicateManagementController)
+
+        // =====================================================
+        // SUBMIT COMPLAINT WITH AUTO-MERGE - FIXED VERSION
+        // =====================================================
+        [HttpPost]
+        [Route("submit-with-auto-merge")]
+        public IHttpActionResult SubmitComplaintWithAutoMerge([FromBody] ComplaintRequest request)
+        {
+            try
+            {
+                if (request == null)
+                    return BadRequest("Complaint data is required");
+
+                if (request.CitizenId == null || request.CitizenId == Guid.Empty)
+                    return BadRequest("CitizenId is required");
+
+                if (request.CategoryId == null || request.CategoryId == Guid.Empty)
+                    return BadRequest("CategoryId is required");
+
+                var category = db.ComplaintCategories.Find(request.CategoryId);
+                if (category == null)
+                    return BadRequest($"Category with ID {request.CategoryId} not found");
+
+                // Check if this is a duplicate before creating the complaint
+                var existingSimilar = FindSimilarComplaintsForCheck(
+                    request.LocationLatitude ?? 0,
+                    request.LocationLongitude ?? 0,
+                    request.CategoryId.Value
+                );
+
+                if (existingSimilar.Any())
+                {
+                    // AUTO-MERGE: Create merged complaint directly without creating a separate new complaint first
+                    var similarComplaints = existingSimilar.Take(5).ToList();
+
+                    // Create a temporary new complaint object for merging
+                    var tempNewComplaint = new Complaint
+                    {
+                        ComplaintId = Guid.NewGuid(),
+                        ComplaintNumber = $"CCMW-{DateTime.Now:yyyyMMddHHmmss}-{Guid.NewGuid().ToString().Substring(0, 4)}",
+                        Title = request.Title,
+                        Description = request.Description,
+                        CategoryId = request.CategoryId.Value,
+                        DepartmentId = category.DepartmentId,
+                        CitizenId = request.CitizenId.Value,
+                        LocationLatitude = (decimal)request.LocationLatitude,
+                        LocationLongitude = (decimal)request.LocationLongitude,
+                        LocationAddress = request.LocationAddress ?? "",
+                        LocationLandmark = request.LocationLandmark,
+                        Priority = request.Priority ?? "Medium",
+                        CurrentStatus = ComplaintStatus.Submitted,
+                        SubmissionStatus = SubmissionStatus.PendingApproval,
+                        CreatedAt = DateTime.Now,
+                        UpdatedAt = DateTime.Now,
+                        UpvoteCount = 0,
+                        ViewCount = 0,
+                        IsDuplicate = false,
+                        IsFake = false
+                    };
+
+                    // Create the merged complaint using the duplicate controller
+                    var duplicateController = new DuplicateManagementController();
+                    duplicateController.SetDbContext(db);
+
+                    var mergedComplaint = duplicateController.AutoMergeComplaint(tempNewComplaint, similarComplaints, request.CitizenId.Value);
+                    db.SaveChanges();
+
+                    // Add status history
+                    db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
+                    {
+                        HistoryId = Guid.NewGuid(),
+                        ComplaintId = mergedComplaint.ComplaintId,
+                        PreviousStatus = null,
+                        NewStatus = ComplaintStatus.Submitted.ToString(),
+                        ChangedById = request.CitizenId.Value,
+                        ChangedAt = DateTime.Now,
+                        Notes = $"AUTO-MERGED: Complaint submitted and merged with {similarComplaints.Count} existing complaints"
+                    });
+                    db.SaveChanges();
+
+                    return Ok(new
+                    {
+                        success = true,
+                        message = $"Complaint submitted and auto-merged with {similarComplaints.Count} existing {(similarComplaints.Count == 1 ? "complaint" : "complaints")}",
+                        complaintId = mergedComplaint.ComplaintId,
+                        complaintNumber = mergedComplaint.ComplaintNumber,
+                        isMerged = true,
+                        mergedCount = similarComplaints.Count + 1
+                    });
+                }
+
+                // No duplicates found - create normal complaint
+                var newComplaint = new Complaint
+                {
+                    ComplaintId = Guid.NewGuid(),
+                    ComplaintNumber = $"CCMW-{DateTime.Now:yyyyMMddHHmmss}-{Guid.NewGuid().ToString().Substring(0, 4)}",
+                    Title = request.Title,
+                    Description = request.Description,
+                    CategoryId = request.CategoryId.Value,
+                    DepartmentId = category.DepartmentId,
+                    CitizenId = request.CitizenId.Value,
+                    LocationLatitude = (decimal)request.LocationLatitude,
+                    LocationLongitude = (decimal)request.LocationLongitude,
+                    LocationAddress = request.LocationAddress ?? "",
+                    LocationLandmark = request.LocationLandmark,
+                    Priority = request.Priority ?? "Medium",
+                    CurrentStatus = ComplaintStatus.Submitted,
+                    SubmissionStatus = SubmissionStatus.PendingApproval,
+                    CreatedAt = DateTime.Now,
+                    UpdatedAt = DateTime.Now,
+                    UpvoteCount = 0,
+                    ViewCount = 0,
+                    IsDuplicate = false,
+                    IsFake = false
+                };
+
+                // Auto-detect zone
+                if (request.LocationLatitude.HasValue && request.LocationLongitude.HasValue)
+                {
+                    var detectedZoneId = DetectZoneByLocation(request.LocationLatitude.Value, request.LocationLongitude.Value);
+                    if (detectedZoneId.HasValue)
+                    {
+                        newComplaint.ZoneId = detectedZoneId.Value;
+                    }
+                }
+
+                db.Complaints.Add(newComplaint);
+                db.SaveChanges();
+
+                // Add status history
+                db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
+                {
+                    HistoryId = Guid.NewGuid(),
+                    ComplaintId = newComplaint.ComplaintId,
+                    PreviousStatus = null,
+                    NewStatus = ComplaintStatus.Submitted.ToString(),
+                    ChangedById = request.CitizenId.Value,
+                    ChangedAt = DateTime.Now,
+                    Notes = "Complaint submitted"
+                });
+                db.SaveChanges();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Complaint submitted successfully",
+                    complaintId = newComplaint.ComplaintId,
+                    complaintNumber = newComplaint.ComplaintNumber,
+                    isMerged = false,
+                    mergedCount = 0
+                });
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"ERROR in SubmitComplaintWithAutoMerge: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Stack trace: {ex.StackTrace}");
+                return InternalServerError(ex);
+            }
+        }
+
+        // Add this helper method to find similar complaints
+        private List<Complaint> FindSimilarComplaintsForCheck(double lat, double lng, Guid categoryId)
+        {
+            try
+            {
+                double searchRadiusKm = 0.2;
+
+                var complaints = db.Complaints
+                    .Where(c => c.CategoryId == categoryId)
+                    .Where(c => c.LocationLatitude != null && c.LocationLongitude != null)
+                    .Where(c => c.CurrentStatus != ComplaintStatus.Resolved &&
+                               c.CurrentStatus != ComplaintStatus.Closed &&
+                               c.CurrentStatus != ComplaintStatus.Rejected)
+                    .Where(c => c.MergedIntoComplaintId == null) // ← only change
+                    .ToList();
+
+                var similar = new List<Complaint>();
+                foreach (var complaint in complaints)
+                {
+                    double distance = CalculateDistance(
+                        lat, lng,
+                        (double)complaint.LocationLatitude,
+                        (double)complaint.LocationLongitude
+                    );
+
+                    if (distance <= searchRadiusKm)
+                    {
+                        similar.Add(complaint);
+                    }
+                }
+
+                return similar;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error finding similar complaints: {ex.Message}");
+                return new List<Complaint>();
+            }
+        }
+        public Complaint AutoMergeComplaint(Complaint newComplaint, List<Complaint> similarComplaints, Guid mergedByUserId)
+        {
+            // Combine all complaints (new + existing duplicates)
+            var allComplaints = new List<Complaint> { newComplaint };
+            allComplaints.AddRange(similarComplaints);
+
+            // =====================================================
+            // CREATE MERGED TITLE
+            // =====================================================
+            var allTitles = allComplaints.Select(c => c.Title).ToList();
+            var mergedTitle = string.Join(" | ", allTitles.Take(3));
+            if (allTitles.Count > 3)
+                mergedTitle += $" + {allTitles.Count - 3} more";
+            if (mergedTitle.Length > 200)
+                mergedTitle = mergedTitle.Substring(0, 197) + "...";
+
+            // =====================================================
+            // CREATE MERGED DESCRIPTION
+            // =====================================================
+            var allDescriptions = new List<string>();
+            foreach (var complaint in allComplaints)
+            {
+                allDescriptions.Add($"=== {complaint.ComplaintNumber} ===\n{complaint.Description}");
+            }
+            var mergedDescription = string.Join("\n\n---\n\n", allDescriptions);
+            if (mergedDescription.Length > 4000)
+                mergedDescription = mergedDescription.Substring(0, 3997) + "...";
+
+            // =====================================================
+            // CALCULATE TOTALS
+            // =====================================================
+            int totalUpvotes = allComplaints.Sum(c => c.UpvoteCount);
+            int totalViews = allComplaints.Sum(c => c.ViewCount);
+
+            // Determine highest priority among all
+            string highestPriority = "Medium";
+            if (allComplaints.Any(c => c.Priority == "Critical"))
+                highestPriority = "Critical";
+            else if (allComplaints.Any(c => c.Priority == "High"))
+                highestPriority = "High";
+            else if (allComplaints.All(c => c.Priority == "Low"))
+                highestPriority = "Low";
+
+            // =====================================================
+            // CREATE NEW MERGED COMPLAINT
+            // =====================================================
+            var mergedComplaint = new Complaint
+            {
+                ComplaintId = Guid.NewGuid(),
+                ComplaintNumber = $"AUTO-{DateTime.Now:yyyyMMddHHmmss}-{Guid.NewGuid().ToString().Substring(0, 4)}",
+                Title = mergedTitle,
+                Description = mergedDescription,
+                CategoryId = newComplaint.CategoryId,
+                DepartmentId = newComplaint.DepartmentId,
+                ZoneId = newComplaint.ZoneId,
+                CitizenId = newComplaint.CitizenId,
+                LocationLatitude = newComplaint.LocationLatitude,
+                LocationLongitude = newComplaint.LocationLongitude,
+                LocationAddress = newComplaint.LocationAddress ?? "",
+                LocationLandmark = newComplaint.LocationLandmark,
+                Priority = highestPriority,
+                UpvoteCount = totalUpvotes,
+                ViewCount = totalViews,
+                CurrentStatus = ComplaintStatus.Submitted,
+                SubmissionStatus = SubmissionStatus.PendingApproval,
+                CreatedAt = DateTime.Now,
+                UpdatedAt = DateTime.Now,
+                IsDuplicate = false,
+                IsFake = false
+            };
+
+            db.Complaints.Add(mergedComplaint);
+
+            // =====================================================
+            // COPY PHOTOS FROM ALL COMPLAINTS
+            // =====================================================
+            int orderCounter = 1;
+            foreach (var complaint in allComplaints)
+            {
+                var photos = db.ComplaintPhotos.Where(p => p.ComplaintId == complaint.ComplaintId).ToList();
+                foreach (var photo in photos)
+                {
+                    db.ComplaintPhotos.Add(new ComplaintPhoto
+                    {
+                        PhotoId = Guid.NewGuid(),
+                        ComplaintId = mergedComplaint.ComplaintId,
+                        PhotoUrl = photo.PhotoUrl,
+                        PhotoType = photo.PhotoType,
+                        UploadOrder = orderCounter++,
+                        UploadedAt = DateTime.Now,
+                        UploadedById = mergedByUserId
+                    });
+                }
+            }
+
+            // =====================================================
+            // CREATE CLUSTER FOR MERGED COMPLAINT
+            // =====================================================
+            var cluster = new DuplicateCluster
+            {
+                ClusterId = Guid.NewGuid(),
+                PrimaryComplaintId = mergedComplaint.ComplaintId,
+                CategoryId = mergedComplaint.CategoryId,
+                LocationLatitude = mergedComplaint.LocationLatitude,
+                LocationLongitude = mergedComplaint.LocationLongitude,
+                ClusterRadiusMeters = 200,
+                TotalComplaintsMerged = allComplaints.Count,
+                TotalCombinedUpvotes = totalUpvotes,
+                CreatedAt = DateTime.Now,
+                UpdatedAt = DateTime.Now
+            };
+
+            db.DuplicateClusters.Add(cluster);
+
+            // =====================================================
+            // ADD ENTRIES FOR ALL COMPLAINTS IN CLUSTER
+            // =====================================================
+            // Entry for the new merged complaint
+            db.DuplicateEntries.Add(new DuplicateEntry
+            {
+                EntryId = Guid.NewGuid(),
+                ClusterId = cluster.ClusterId,
+                ComplaintId = mergedComplaint.ComplaintId,
+                SimilarityScore = 100,
+                SimilarityFactors = "{\"type\":\"auto_merged_result\"}",
+                MergedAt = DateTime.Now,
+                MergedById = mergedByUserId
+            });
+
+            // Mark all original complaints as merged
+            foreach (var complaint in allComplaints)
+            {
+                complaint.IsDuplicate = true;
+                complaint.MergedIntoComplaintId = mergedComplaint.ComplaintId;
+                complaint.UpdatedAt = DateTime.Now;
+
+                db.DuplicateEntries.Add(new DuplicateEntry
+                {
+                    EntryId = Guid.NewGuid(),
+                    ClusterId = cluster.ClusterId,
+                    ComplaintId = complaint.ComplaintId,
+                    SimilarityScore = 100,
+                    SimilarityFactors = "{\"type\":\"auto_merged_original\"}",
+                    MergedAt = DateTime.Now,
+                    MergedById = mergedByUserId
+                });
+            }
+
+            // =====================================================
+            // ADD STATUS HISTORY
+            // =====================================================
+            db.ComplaintStatusHistories.Add(new ComplaintStatusHistories
+            {
+                HistoryId = Guid.NewGuid(),
+                ComplaintId = mergedComplaint.ComplaintId,
+                PreviousStatus = null,
+                NewStatus = ComplaintStatus.Submitted.ToString(),
+                ChangedById = mergedByUserId,
+                ChangedAt = DateTime.Now,
+                Notes = $"Auto-merged {allComplaints.Count} duplicate complaints"
+            });
+
+            return mergedComplaint;
+        }  // Add this method to DuplicateManagementController.cs
+
+
+        // =====================================================
+        // DTO CLASSES
+        // =====================================================
+        // Request DTO for complaint submission
+        public class ComplaintRequest
+        {
+            public string Title { get; set; }
+            public string Description { get; set; }
+            public Guid? CategoryId { get; set; }
+            public Guid? CitizenId { get; set; }
+            public Guid? DepartmentId { get; set; }
+            public Guid? ZoneId { get; set; }
+            public double? LocationLatitude { get; set; }
+            public double? LocationLongitude { get; set; }
+            public string LocationAddress { get; set; }
+            public string LocationLandmark { get; set; }
+            public string Priority { get; set; }
+        }
+        public class FakeMarkRequest
+        {
+            public Guid AdminId { get; set; }
+            public string Notes { get; set; }
+        }
     }
 }
