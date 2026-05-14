@@ -1126,7 +1126,7 @@ namespace CCMW.Controllers
                         var similar = dbContext.Complaints
                             .Where(c => c.ComplaintId != newComplaintId)
                             .Where(c => c.CategoryId == newComplaint.CategoryId)
-                            .Where(c => !c.IsDuplicate && c.MergedIntoComplaintId == null)
+                            .Where(c =>  c.MergedIntoComplaintId == null)
                             .Where(c => c.LocationLatitude != null && c.LocationLongitude != null)
                             .ToList()
                             .Where(c => CalculateDistance(
